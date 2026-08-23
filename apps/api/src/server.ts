@@ -1,5 +1,6 @@
 import Fastify from 'fastify';
 import cors from '@fastify/cors';
+import { createHash, createHmac, timingSafeEqual } from 'node:crypto';
 import { z } from 'zod';
 import { db, pingDatabase } from './db.js';
 
@@ -13,13 +14,58 @@ await app.register(cors, {
   origin: allowedOrigins.length ? allowedOrigins : true
 });
 
+const ADMIN_EMAIL = process.env.ADMIN_EMAIL ?? '';
+const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD ?? '';
+const ADMIN_COMPANY_ID = process.env.ADMIN_COMPANY_ID ?? '';
+const ADMIN_TOKEN_SECRET = process.env.ADMIN_TOKEN_SECRET ?? '';
+
+type AdminToken = { email: string; companyId: string; exp: number };
+
+const safeEqual = (a: string, b: string) => {
+  const left = createHash('sha256').update(a).digest();
+  const right = createHash('sha256').update(b).digest();
+  return timingSafeEqual(left, right);
+};
+
+const signAdminToken = (payload: AdminToken) => {
+  const body = Buffer.from(JSON.stringify(payload)).toString('base64url');
+  const signature = createHmac('sha256', ADMIN_TOKEN_SECRET).update(body).digest('base64url');
+  return `${body}.${signature}`;
+};
+
+const verifyAdminToken = (token: string): AdminToken | null => {
+  if (!ADMIN_TOKEN_SECRET) return null;
+  const [body, signature] = token.split('.');
+  if (!body || !signature) return null;
+  const expected = createHmac('sha256', ADMIN_TOKEN_SECRET).update(body).digest('base64url');
+  if (!safeEqual(signature, expected)) return null;
+  try {
+    const payload = JSON.parse(Buffer.from(body, 'base64url').toString('utf8')) as AdminToken;
+    if (!payload.email || !payload.companyId || !payload.exp || payload.exp < Date.now()) return null;
+    return payload;
+  } catch {
+    return null;
+  }
+};
+
+const requireAdmin = (request: any, reply: any): AdminToken | null => {
+  const header = String(request.headers.authorization ?? '');
+  const token = header.startsWith('Bearer ') ? header.slice(7) : '';
+  const payload = verifyAdminToken(token);
+  if (!payload) {
+    reply.code(401).send({ ok: false, error: 'ADMIN_AUTH_REQUIRED' });
+    return null;
+  }
+  return payload;
+};
+
 app.get('/health', async (_request, reply) => {
   try {
     const databaseTime = await pingDatabase();
     return {
       ok: true,
       service: 'attendra-api',
-      version: '0.1.0',
+      version: '0.2.0',
       database: 'connected',
       databaseTime,
       time: new Date().toISOString()
@@ -33,6 +79,23 @@ app.get('/health', async (_request, reply) => {
       time: new Date().toISOString()
     });
   }
+});
+
+app.post('/v1/admin/login', async (request, reply) => {
+  const parsed = z.object({ email: z.email(), password: z.string().min(8).max(256) }).safeParse(request.body);
+  if (!parsed.success) return reply.code(400).send({ ok: false, error: 'INVALID_LOGIN_REQUEST' });
+
+  if (!ADMIN_EMAIL || !ADMIN_PASSWORD || !ADMIN_COMPANY_ID || !ADMIN_TOKEN_SECRET) {
+    return reply.code(503).send({ ok: false, error: 'ADMIN_NOT_CONFIGURED' });
+  }
+
+  if (!safeEqual(parsed.data.email.trim().toLowerCase(), ADMIN_EMAIL.trim().toLowerCase()) || !safeEqual(parsed.data.password, ADMIN_PASSWORD)) {
+    return reply.code(401).send({ ok: false, error: 'INVALID_ADMIN_CREDENTIALS' });
+  }
+
+  const expiresAt = Date.now() + 8 * 60 * 60 * 1000;
+  const token = signAdminToken({ email: ADMIN_EMAIL, companyId: ADMIN_COMPANY_ID, exp: expiresAt });
+  return { ok: true, token, expiresAt, companyId: ADMIN_COMPANY_ID, email: ADMIN_EMAIL };
 });
 
 const attendanceSchema = z.object({
@@ -147,8 +210,11 @@ app.post('/v1/attendance/events', async (request, reply) => {
 });
 
 app.get('/v1/companies/:companyId/attendance/recent', async (request, reply) => {
+  const admin = requireAdmin(request, reply);
+  if (!admin) return;
   const params = z.object({ companyId: z.uuid() }).safeParse(request.params);
   if (!params.success) return reply.code(400).send({ ok: false, error: 'INVALID_COMPANY_ID' });
+  if (params.data.companyId !== admin.companyId) return reply.code(403).send({ ok: false, error: 'COMPANY_ACCESS_DENIED' });
 
   const result = await db.query(
     `select ae.id,
@@ -171,8 +237,11 @@ app.get('/v1/companies/:companyId/attendance/recent', async (request, reply) => 
 });
 
 app.get('/v1/companies/:companyId/attendance/summary', async (request, reply) => {
+  const admin = requireAdmin(request, reply);
+  if (!admin) return;
   const params = z.object({ companyId: z.uuid() }).safeParse(request.params);
   if (!params.success) return reply.code(400).send({ ok: false, error: 'INVALID_COMPANY_ID' });
+  if (params.data.companyId !== admin.companyId) return reply.code(403).send({ ok: false, error: 'COMPANY_ACCESS_DENIED' });
 
   const result = await db.query(
     `with latest as (
@@ -189,6 +258,80 @@ app.get('/v1/companies/:companyId/attendance/summary', async (request, reply) =>
   );
 
   return { ok: true, summary: { ...result.rows[0], absent: 0 } };
+});
+
+app.get('/v1/admin/employees', async (request, reply) => {
+  const admin = requireAdmin(request, reply);
+  if (!admin) return;
+  const result = await db.query(
+    `select id,
+            employee_number as "employeeNumber",
+            first_name as "firstName",
+            last_name as "lastName",
+            hourly_worker as "hourlyWorker",
+            active,
+            created_at as "createdAt"
+     from employees
+     where company_id = $1
+     order by active desc, first_name, last_name`,
+    [admin.companyId]
+  );
+  return { ok: true, employees: result.rows };
+});
+
+app.post('/v1/admin/employees', async (request, reply) => {
+  const admin = requireAdmin(request, reply);
+  if (!admin) return;
+  const parsed = z.object({
+    employeeNumber: z.string().trim().min(1).max(64),
+    firstName: z.string().trim().min(1).max(100),
+    lastName: z.string().trim().min(1).max(100),
+    pin: z.string().regex(/^\d{4,12}$/),
+    hourlyWorker: z.boolean().default(false)
+  }).safeParse(request.body);
+  if (!parsed.success) return reply.code(400).send({ ok: false, error: 'INVALID_EMPLOYEE', details: parsed.error.flatten() });
+
+  try {
+    const result = await db.query(
+      `insert into employees (company_id, employee_number, first_name, last_name, pin_hash, hourly_worker)
+       values ($1,$2,$3,$4,crypt($5, gen_salt('bf')),$6)
+       returning id, employee_number as "employeeNumber", first_name as "firstName", last_name as "lastName", hourly_worker as "hourlyWorker", active, created_at as "createdAt"`,
+      [admin.companyId, parsed.data.employeeNumber, parsed.data.firstName, parsed.data.lastName, parsed.data.pin, parsed.data.hourlyWorker]
+    );
+    return reply.code(201).send({ ok: true, employee: result.rows[0] });
+  } catch (error: any) {
+    if (error?.code === '23505') return reply.code(409).send({ ok: false, error: 'EMPLOYEE_NUMBER_EXISTS' });
+    app.log.error(error);
+    return reply.code(500).send({ ok: false, error: 'EMPLOYEE_CREATE_FAILED' });
+  }
+});
+
+app.patch('/v1/admin/employees/:employeeId', async (request, reply) => {
+  const admin = requireAdmin(request, reply);
+  if (!admin) return;
+  const params = z.object({ employeeId: z.uuid() }).safeParse(request.params);
+  const body = z.object({
+    firstName: z.string().trim().min(1).max(100).optional(),
+    lastName: z.string().trim().min(1).max(100).optional(),
+    pin: z.string().regex(/^\d{4,12}$/).optional(),
+    hourlyWorker: z.boolean().optional(),
+    active: z.boolean().optional()
+  }).safeParse(request.body);
+  if (!params.success || !body.success) return reply.code(400).send({ ok: false, error: 'INVALID_EMPLOYEE_UPDATE' });
+
+  const result = await db.query(
+    `update employees
+     set first_name = coalesce($3, first_name),
+         last_name = coalesce($4, last_name),
+         pin_hash = case when $5::text is null then pin_hash else crypt($5, gen_salt('bf')) end,
+         hourly_worker = coalesce($6, hourly_worker),
+         active = coalesce($7, active)
+     where id = $1 and company_id = $2
+     returning id, employee_number as "employeeNumber", first_name as "firstName", last_name as "lastName", hourly_worker as "hourlyWorker", active, created_at as "createdAt"`,
+    [params.data.employeeId, admin.companyId, body.data.firstName ?? null, body.data.lastName ?? null, body.data.pin ?? null, body.data.hourlyWorker ?? null, body.data.active ?? null]
+  );
+  if (!result.rowCount) return reply.code(404).send({ ok: false, error: 'EMPLOYEE_NOT_FOUND' });
+  return { ok: true, employee: result.rows[0] };
 });
 
 const port = Number(process.env.PORT ?? 4000);
