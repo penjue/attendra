@@ -4,7 +4,7 @@ import { dirname, resolve } from 'node:path';
 import { db } from './db.js';
 
 const here = dirname(fileURLToPath(import.meta.url));
-const repoRoot = resolve(here, '../../../..');
+const repoRoot = resolve(here, '../../..');
 const schemaPath = resolve(repoRoot, 'database/schema.sql');
 const seedPath = resolve(repoRoot, 'database/demo_seed.sql');
 
