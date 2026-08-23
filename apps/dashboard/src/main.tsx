@@ -21,7 +21,12 @@ function App() {
   const [connected, setConnected] = useState(false);
   const [employeeMessage, setEmployeeMessage] = useState('');
 
-  const authHeaders = token ? { Authorization: `Bearer ${token}` } : {};
+  const makeHeaders = (extra?: HeadersInit) => {
+    const headers = new Headers(extra);
+    headers.set('Content-Type', 'application/json');
+    if (token) headers.set('Authorization', `Bearer ${token}`);
+    return headers;
+  };
 
   const logout = () => {
     sessionStorage.removeItem('attendra_admin_token');
@@ -32,7 +37,7 @@ function App() {
   };
 
   const fetchJson = async (url: string, init: RequestInit = {}) => {
-    const response = await fetch(url, { ...init, headers: { 'Content-Type': 'application/json', ...authHeaders, ...(init.headers ?? {}) } });
+    const response = await fetch(url, { ...init, headers: makeHeaders(init.headers) });
     if (response.status === 401) {
       logout();
       throw new Error('Session expired');
