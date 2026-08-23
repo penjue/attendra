@@ -1,0 +1,15 @@
+{
+  "name": "attendra",
+  "private": true,
+  "version": "0.1.0",
+  "workspaces": ["apps/*", "packages/*"],
+  "scripts": {
+    "dev:api": "npm --workspace @attendra/api run dev",
+    "dev:dashboard": "npm --workspace @attendra/dashboard run dev",
+    "dev:tablet": "npm --workspace @attendra/tablet run dev",
+    "build": "npm run build --workspaces --if-present",
+    "test": "npm run test --workspaces --if-present",
+    "typecheck": "npm run typecheck --workspaces --if-present"
+  },
+  "engines": {"node": ">=22"}
+}
