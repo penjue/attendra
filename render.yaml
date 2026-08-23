@@ -4,6 +4,7 @@ services:
     runtime: node
     rootDir: .
     buildCommand: npm install && npm --workspace @attendra/api run build
+    preDeployCommand: npm --workspace @attendra/api run migrate
     startCommand: npm --workspace @attendra/api run start
     envVars:
       - key: NODE_ENV
@@ -14,16 +15,36 @@ services:
           property: connectionString
       - key: JWT_SECRET
         generateValue: true
+      - key: CORS_ORIGIN
+        sync: false
+
   - type: web
     name: attendra-dashboard
     runtime: static
     buildCommand: npm install && npm --workspace @attendra/dashboard run build
     staticPublishPath: apps/dashboard/dist
+    envVars:
+      - key: VITE_API_URL
+        sync: false
+      - key: VITE_COMPANY_ID
+        sync: false
+
   - type: web
     name: attendra-tablet
     runtime: static
     buildCommand: npm install && npm --workspace @attendra/tablet run build
     staticPublishPath: apps/tablet/dist
+    envVars:
+      - key: VITE_API_URL
+        sync: false
+      - key: VITE_COMPANY_ID
+        sync: false
+      - key: VITE_BRANCH_ID
+        sync: false
+      - key: VITE_DEVICE_ID
+        sync: false
+      - key: VITE_BRANCH_NAME
+        sync: false
 
 databases:
   - name: attendra-db
