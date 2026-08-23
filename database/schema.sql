@@ -1,6 +1,18 @@
 CREATE EXTENSION IF NOT EXISTS pgcrypto;
 
-CREATE TABLE companies (
+DO $$ BEGIN
+  CREATE TYPE attendance_action AS ENUM ('CHECK_IN','CHECK_OUT');
+EXCEPTION
+  WHEN duplicate_object THEN NULL;
+END $$;
+
+DO $$ BEGIN
+  CREATE TYPE attendance_status AS ENUM ('ON_TIME','LATE','EARLY','UNSCHEDULED');
+EXCEPTION
+  WHEN duplicate_object THEN NULL;
+END $$;
+
+CREATE TABLE IF NOT EXISTS companies (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   name text NOT NULL,
   country_code char(2) NOT NULL CHECK (country_code IN ('GB','KE')),
@@ -9,7 +21,7 @@ CREATE TABLE companies (
   created_at timestamptz NOT NULL DEFAULT now()
 );
 
-CREATE TABLE branches (
+CREATE TABLE IF NOT EXISTS branches (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   company_id uuid NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
   name text NOT NULL,
@@ -19,7 +31,7 @@ CREATE TABLE branches (
   created_at timestamptz NOT NULL DEFAULT now()
 );
 
-CREATE TABLE employees (
+CREATE TABLE IF NOT EXISTS employees (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   company_id uuid NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
   employee_number text NOT NULL,
@@ -32,7 +44,7 @@ CREATE TABLE employees (
   UNIQUE(company_id, employee_number)
 );
 
-CREATE TABLE devices (
+CREATE TABLE IF NOT EXISTS devices (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   company_id uuid NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
   branch_id uuid NOT NULL REFERENCES branches(id) ON DELETE CASCADE,
@@ -43,7 +55,7 @@ CREATE TABLE devices (
   created_at timestamptz NOT NULL DEFAULT now()
 );
 
-CREATE TABLE shifts (
+CREATE TABLE IF NOT EXISTS shifts (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   company_id uuid NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
   branch_id uuid NOT NULL REFERENCES branches(id),
@@ -55,10 +67,7 @@ CREATE TABLE shifts (
   CHECK (ends_at > starts_at)
 );
 
-CREATE TYPE attendance_action AS ENUM ('CHECK_IN','CHECK_OUT');
-CREATE TYPE attendance_status AS ENUM ('ON_TIME','LATE','EARLY','UNSCHEDULED');
-
-CREATE TABLE attendance_events (
+CREATE TABLE IF NOT EXISTS attendance_events (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   company_id uuid NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
   branch_id uuid NOT NULL REFERENCES branches(id),
@@ -72,7 +81,7 @@ CREATE TABLE attendance_events (
   source text NOT NULL DEFAULT 'TABLET'
 );
 
-CREATE TABLE audit_log (
+CREATE TABLE IF NOT EXISTS audit_log (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   company_id uuid REFERENCES companies(id) ON DELETE CASCADE,
   actor_type text NOT NULL,
@@ -84,6 +93,6 @@ CREATE TABLE audit_log (
   created_at timestamptz NOT NULL DEFAULT now()
 );
 
-CREATE INDEX idx_attendance_company_time ON attendance_events(company_id, occurred_at DESC);
-CREATE INDEX idx_attendance_employee_time ON attendance_events(employee_id, occurred_at DESC);
-CREATE INDEX idx_shifts_employee_start ON shifts(employee_id, starts_at);
+CREATE INDEX IF NOT EXISTS idx_attendance_company_time ON attendance_events(company_id, occurred_at DESC);
+CREATE INDEX IF NOT EXISTS idx_attendance_employee_time ON attendance_events(employee_id, occurred_at DESC);
+CREATE INDEX IF NOT EXISTS idx_shifts_employee_start ON shifts(employee_id, starts_at);
