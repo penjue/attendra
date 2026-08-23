@@ -122,7 +122,7 @@ app.post('/v1/attendance/events', async (request, reply) => {
     await client.query('update devices set last_seen_at = now() where id = $1', [input.deviceId]);
     await client.query(
       `insert into audit_log (company_id, actor_type, actor_id, action, entity_type, entity_id, metadata)
-       values ($1, 'DEVICE', $2, $3, 'ATTENDANCE_EVENT', $4, jsonb_build_object('employeeId', $5, 'branchId', $6))`,
+       values ($1, 'DEVICE', $2, $3, 'ATTENDANCE_EVENT', $4, jsonb_build_object('employeeId', $5::uuid, 'branchId', $6::uuid))`,
       [input.companyId, input.deviceId, input.action, insertResult.rows[0].id, employee.id, input.branchId]
     );
 
