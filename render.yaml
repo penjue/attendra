@@ -1,0 +1,31 @@
+services:
+  - type: web
+    name: attendra-api
+    runtime: node
+    rootDir: .
+    buildCommand: npm install && npm --workspace @attendra/api run build
+    startCommand: npm --workspace @attendra/api run start
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: DATABASE_URL
+        fromDatabase:
+          name: attendra-db
+          property: connectionString
+      - key: JWT_SECRET
+        generateValue: true
+  - type: web
+    name: attendra-dashboard
+    runtime: static
+    buildCommand: npm install && npm --workspace @attendra/dashboard run build
+    staticPublishPath: apps/dashboard/dist
+  - type: web
+    name: attendra-tablet
+    runtime: static
+    buildCommand: npm install && npm --workspace @attendra/tablet run build
+    staticPublishPath: apps/tablet/dist
+
+databases:
+  - name: attendra-db
+    databaseName: attendra
+    user: attendra
