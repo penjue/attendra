@@ -41,6 +41,7 @@ function App() {
   const [shiftSearch, setShiftSearch] = useState('');
   const [shiftFilter, setShiftFilter] = useState<'upcoming' | 'all' | 'past'>('upcoming');
   const [timeSearch, setTimeSearch] = useState('');
+  const [includeOvertime, setIncludeOvertime] = useState(() => localStorage.getItem('attendra_include_overtime') !== 'false');
 
   const makeHeaders = (extra?: HeadersInit) => {
     const headers = new Headers(extra);
@@ -84,6 +85,14 @@ function App() {
     const timer = window.setInterval(loadOverview, 5000);
     return () => window.clearInterval(timer);
   }, [token]);
+
+  const toggleOvertime = () => {
+    setIncludeOvertime(current => {
+      const next = !current;
+      localStorage.setItem('attendra_include_overtime', String(next));
+      return next;
+    });
+  };
 
   const login = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault(); setLoginError(''); const form = new FormData(event.currentTarget);
@@ -161,7 +170,16 @@ function App() {
 
     {activeTab === 'shifts' && <><section className="panel branchFormPanel"><div className="panelHead"><div><h2>Schedule shift</h2><span>Assign an employee to a branch and define working hours.</span></div></div><form onSubmit={addShift} className="shiftForm"><label>Employee<select name="employeeId" required defaultValue=""><option value="" disabled>Select employee</option>{employees.filter(e => e.active).map(employee => <option key={employee.id} value={employee.id}>{employee.firstName} {employee.lastName} · #{employee.employeeNumber}</option>)}</select></label><label>Branch<select name="branchId" required defaultValue=""><option value="" disabled>Select branch</option>{branches.filter(b => b.active).map(branch => <option key={branch.id} value={branch.id}>{branch.name}</option>)}</select></label><label>Starts<input name="startsAt" type="datetime-local" required /></label><label>Ends<input name="endsAt" type="datetime-local" required /></label><label>Break minutes<input name="breakMinutes" type="number" min="0" max="720" defaultValue="0" required /></label><button className="primary" type="submit" disabled={!employees.some(e => e.active) || !branches.some(b => b.active)}>Schedule shift</button></form><p className="formHint">Times use the timezone configured on this device. Branch-specific timezone scheduling will be added before international rollout.</p>{shiftMessage && <div className="infoBox">{shiftMessage}</div>}</section><section className="panel"><div className="panelHead"><div><h2>Shift schedule</h2><span>{shifts.filter(s => new Date(s.endsAt).getTime() >= Date.now()).length} upcoming · {shifts.length} total</span></div></div><div className="directoryTools"><input value={shiftSearch} onChange={e => setShiftSearch(e.target.value)} placeholder="Search employee or branch" /><select value={shiftFilter} onChange={e => setShiftFilter(e.target.value as any)}><option value="upcoming">Upcoming & current</option><option value="all">All shifts</option><option value="past">Past shifts</option></select></div><div className="branchList">{filteredShifts.length === 0 ? <p className="empty">No shifts match this view.</p> : filteredShifts.map(shift => { const now=Date.now(),start=new Date(shift.startsAt).getTime(),end=new Date(shift.endsAt).getTime(); const state=now<start?'Upcoming':now<=end?'In progress':'Completed'; return <div className="branchRow" key={shift.id}><div className="branchSummary"><strong>{shift.employeeName}</strong><span>#{shift.employeeNumber} · {shift.branchName}</span><small>{state} · {new Date(shift.startsAt).toLocaleString()} → {new Date(shift.endsAt).toLocaleString()} · {shift.breakMinutes} min break</small></div><div className="rowActions"><button className="dangerAction" onClick={() => deleteShift(shift)}>Delete</button></div></div> })}</div></section></>}
 
-    {activeTab === 'timekeeping' && <><section className="grid"><article><strong>{minutesLabel(timeTotals.worked)}</strong><span>Worked</span></article><article><strong>{minutesLabel(timeTotals.scheduled)}</strong><span>Scheduled</span></article><article><strong>{minutesLabel(timeTotals.overtime)}</strong><span>Overtime</span></article><article><strong>{timeTotals.open}</strong><span>Open sessions</span></article></section><section className="panel"><div className="panelHead"><div><h2>Timekeeping</h2><span>Calculated from recent check-ins, check-outs and scheduled shifts</span></div></div><div className="directoryTools"><input value={timeSearch} onChange={e => setTimeSearch(e.target.value)} placeholder="Search employee" /></div><div className="branchList">{filteredTimeRows.length === 0 ? <p className="empty">No timekeeping data yet.</p> : filteredTimeRows.map(row => <div className="branchRow" key={row.employeeNumber}><div className="branchSummary"><strong>{row.employeeName}</strong><span>#{row.employeeNumber}</span><small>Worked {minutesLabel(row.workedMinutes)} · Scheduled {minutesLabel(row.scheduledMinutes)} · Overtime {minutesLabel(row.overtimeMinutes)}</small><small>{row.lateEvents} late check-in{row.lateEvents === 1 ? '' : 's'} · {row.earlyEvents} early check-in{row.earlyEvents === 1 ? '' : 's'}{row.openSession ? ' · Missing check-out / currently clocked in' : ''}</small></div></div>)}</div><p className="formHint">Prototype totals use the latest 50 attendance events available from the current API. A full payroll report endpoint will replace this limit before production rollout.</p></section></>}
+    {activeTab === 'timekeeping' && <>
+      <section className="grid"><article><strong>{minutesLabel(timeTotals.worked)}</strong><span>Worked</span></article><article><strong>{minutesLabel(timeTotals.scheduled)}</strong><span>Scheduled</span></article><article><strong>{includeOvertime ? minutesLabel(timeTotals.overtime) : 'Off'}</strong><span>Overtime</span></article><article><strong>{timeTotals.open}</strong><span>Open sessions</span></article></section>
+      <section className="panel">
+        <div className="panelHead"><div><h2>Timekeeping</h2><span>Calculated from recent check-ins, check-outs and scheduled shifts</span></div><div className="rowActions"><button onClick={toggleOvertime}>{includeOvertime ? 'Overtime: Included' : 'Overtime: Excluded'}</button></div></div>
+        <div className="infoBox">Overtime is currently <strong>{includeOvertime ? 'included' : 'excluded'}</strong>. Turning it off does not change recorded worked hours; it only excludes overtime from the timekeeping view and future payable-hour calculations.</div>
+        <div className="directoryTools"><input value={timeSearch} onChange={e => setTimeSearch(e.target.value)} placeholder="Search employee" /></div>
+        <div className="branchList">{filteredTimeRows.length === 0 ? <p className="empty">No timekeeping data yet.</p> : filteredTimeRows.map(row => <div className="branchRow" key={row.employeeNumber}><div className="branchSummary"><strong>{row.employeeName}</strong><span>#{row.employeeNumber}</span><small>Worked {minutesLabel(row.workedMinutes)} · Scheduled {minutesLabel(row.scheduledMinutes)} · {includeOvertime ? `Overtime ${minutesLabel(row.overtimeMinutes)}` : 'Overtime excluded'}</small><small>{row.lateEvents} late check-in{row.lateEvents === 1 ? '' : 's'} · {row.earlyEvents} early check-in{row.earlyEvents === 1 ? '' : 's'}{row.openSession ? ' · Missing check-out / currently clocked in' : ''}</small></div></div>)}</div>
+        <p className="formHint">Prototype totals use the latest 50 attendance events available from the current API. A full payroll report endpoint will replace this limit before production rollout.</p>
+      </section>
+    </>}
   </main>;
 }
 
