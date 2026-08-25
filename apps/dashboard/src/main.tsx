@@ -6,7 +6,8 @@ type Summary = { checkedInNow: number; lateToday: number; absent: number; offlin
 type AttendanceEvent = { id: string; action: 'CHECK_IN' | 'CHECK_OUT'; status: 'ON_TIME' | 'LATE' | 'EARLY' | 'UNSCHEDULED'; occurredAt: string; employeeNumber: string; employeeName: string; branchName: string };
 type Employee = { id: string; employeeNumber: string; firstName: string; lastName: string; hourlyWorker: boolean; active: boolean; createdAt: string };
 type Branch = { id: string; name: string; timezone: string; address: string | null; active: boolean; createdAt: string; deviceCount?: number };
-type Tab = 'overview' | 'employees' | 'branches';
+type Device = { id: string; name: string; branchId: string; branchName: string; lastSeenAt: string | null; active: boolean; online: boolean; createdAt: string };
+type Tab = 'overview' | 'employees' | 'branches' | 'devices';
 
 const env = (import.meta as any).env as Record<string, string | undefined>;
 const API_URL = env.VITE_API_URL ?? 'http://localhost:4000';
@@ -21,6 +22,7 @@ function App() {
   const [events, setEvents] = useState<AttendanceEvent[]>([]);
   const [employees, setEmployees] = useState<Employee[]>([]);
   const [branches, setBranches] = useState<Branch[]>([]);
+  const [devices, setDevices] = useState<Device[]>([]);
   const [connected, setConnected] = useState(false);
   const [employeeMessage, setEmployeeMessage] = useState('');
   const [employeeSearch, setEmployeeSearch] = useState('');
@@ -28,6 +30,9 @@ function App() {
   const [branchMessage, setBranchMessage] = useState('');
   const [branchSearch, setBranchSearch] = useState('');
   const [branchFilter, setBranchFilter] = useState<'all' | 'active' | 'inactive'>('all');
+  const [deviceMessage, setDeviceMessage] = useState('');
+  const [deviceSearch, setDeviceSearch] = useState('');
+  const [deviceFilter, setDeviceFilter] = useState<'all' | 'active' | 'inactive'>('all');
 
   const makeHeaders = (extra?: HeadersInit) => {
     const headers = new Headers(extra);
@@ -75,9 +80,7 @@ function App() {
     try {
       const data = await fetchJson(`${API_URL}/v1/admin/employees`);
       setEmployees(data.employees);
-    } catch (error: any) {
-      setEmployeeMessage(error.message);
-    }
+    } catch (error: any) { setEmployeeMessage(error.message); }
   };
 
   const loadBranches = async () => {
@@ -85,9 +88,15 @@ function App() {
     try {
       const data = await fetchJson(`${API_URL}/v1/admin/branches`);
       setBranches(data.branches);
-    } catch (error: any) {
-      setBranchMessage(error.message);
-    }
+    } catch (error: any) { setBranchMessage(error.message); }
+  };
+
+  const loadDevices = async () => {
+    if (!token) return;
+    try {
+      const data = await fetchJson(`${API_URL}/v1/admin/devices`);
+      setDevices(data.devices);
+    } catch (error: any) { setDeviceMessage(error.message); }
   };
 
   useEffect(() => {
@@ -95,6 +104,7 @@ function App() {
     loadOverview();
     loadEmployees();
     loadBranches();
+    loadDevices();
     const timer = window.setInterval(loadOverview, 5000);
     return () => window.clearInterval(timer);
   }, [token]);
@@ -104,11 +114,7 @@ function App() {
     setLoginError('');
     const form = new FormData(event.currentTarget);
     try {
-      const response = await fetch(`${API_URL}/v1/admin/login`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ email: form.get('email'), password: form.get('password') })
-      });
+      const response = await fetch(`${API_URL}/v1/admin/login`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ email: form.get('email'), password: form.get('password') }) });
       const data = await response.json();
       if (!response.ok) throw new Error(data.error ?? 'Login failed');
       sessionStorage.setItem('attendra_admin_token', data.token);
@@ -121,32 +127,17 @@ function App() {
   };
 
   const addEmployee = async (event: FormEvent<HTMLFormElement>) => {
-    event.preventDefault();
-    setEmployeeMessage('');
-    const form = new FormData(event.currentTarget);
+    event.preventDefault(); setEmployeeMessage(''); const form = new FormData(event.currentTarget);
     try {
-      await fetchJson(`${API_URL}/v1/admin/employees`, {
-        method: 'POST',
-        body: JSON.stringify({
-          employeeNumber: form.get('employeeNumber'), firstName: form.get('firstName'), lastName: form.get('lastName'),
-          pin: form.get('pin'), hourlyWorker: form.get('hourlyWorker') === 'on'
-        })
-      });
-      event.currentTarget.reset();
-      setEmployeeMessage('Employee added successfully.');
-      await loadEmployees();
-    } catch (error: any) {
-      setEmployeeMessage(error.message === 'EMPLOYEE_NUMBER_EXISTS' ? 'That employee number already exists.' : error.message);
-    }
+      await fetchJson(`${API_URL}/v1/admin/employees`, { method: 'POST', body: JSON.stringify({ employeeNumber: form.get('employeeNumber'), firstName: form.get('firstName'), lastName: form.get('lastName'), pin: form.get('pin'), hourlyWorker: form.get('hourlyWorker') === 'on' }) });
+      event.currentTarget.reset(); setEmployeeMessage('Employee added successfully.'); await loadEmployees();
+    } catch (error: any) { setEmployeeMessage(error.message === 'EMPLOYEE_NUMBER_EXISTS' ? 'That employee number already exists.' : error.message); }
   };
 
   const updateEmployee = async (employee: Employee, changes: Record<string, unknown>, successMessage = 'Employee updated successfully.') => {
     setEmployeeMessage('');
-    try {
-      await fetchJson(`${API_URL}/v1/admin/employees/${employee.id}`, { method: 'PATCH', body: JSON.stringify(changes) });
-      setEmployeeMessage(successMessage);
-      await loadEmployees();
-    } catch (error: any) { setEmployeeMessage(error.message); }
+    try { await fetchJson(`${API_URL}/v1/admin/employees/${employee.id}`, { method: 'PATCH', body: JSON.stringify(changes) }); setEmployeeMessage(successMessage); await loadEmployees(); }
+    catch (error: any) { setEmployeeMessage(error.message); }
   };
 
   const resetPin = async (employee: Employee) => {
@@ -164,27 +155,17 @@ function App() {
   };
 
   const addBranch = async (event: FormEvent<HTMLFormElement>) => {
-    event.preventDefault();
-    setBranchMessage('');
-    const form = new FormData(event.currentTarget);
+    event.preventDefault(); setBranchMessage(''); const form = new FormData(event.currentTarget);
     try {
-      await fetchJson(`${API_URL}/v1/admin/branches`, {
-        method: 'POST',
-        body: JSON.stringify({ name: form.get('name'), timezone: form.get('timezone'), address: form.get('address') })
-      });
-      event.currentTarget.reset();
-      setBranchMessage('Branch added successfully.');
-      await loadBranches();
+      await fetchJson(`${API_URL}/v1/admin/branches`, { method: 'POST', body: JSON.stringify({ name: form.get('name'), timezone: form.get('timezone'), address: form.get('address') }) });
+      event.currentTarget.reset(); setBranchMessage('Branch added successfully.'); await loadBranches();
     } catch (error: any) { setBranchMessage(error.message); }
   };
 
   const updateBranch = async (branch: Branch, changes: Record<string, unknown>, successMessage = 'Branch updated successfully.') => {
     setBranchMessage('');
-    try {
-      await fetchJson(`${API_URL}/v1/admin/branches/${branch.id}`, { method: 'PATCH', body: JSON.stringify(changes) });
-      setBranchMessage(successMessage);
-      await loadBranches();
-    } catch (error: any) { setBranchMessage(error.message); }
+    try { await fetchJson(`${API_URL}/v1/admin/branches/${branch.id}`, { method: 'PATCH', body: JSON.stringify(changes) }); setBranchMessage(successMessage); await loadBranches(); }
+    catch (error: any) { setBranchMessage(error.message); }
   };
 
   const editBranch = async (branch: Branch) => {
@@ -193,6 +174,26 @@ function App() {
     const address = window.prompt('Address', branch.address ?? ''); if (address === null) return;
     if (!name.trim() || !timezone.trim()) return setBranchMessage('Branch name and timezone are required.');
     await updateBranch(branch, { name: name.trim(), timezone: timezone.trim(), address: address.trim() }, 'Branch details updated.');
+  };
+
+  const addDevice = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault(); setDeviceMessage(''); const form = new FormData(event.currentTarget);
+    try {
+      await fetchJson(`${API_URL}/v1/admin/devices`, { method: 'POST', body: JSON.stringify({ name: form.get('name'), branchId: form.get('branchId') }) });
+      event.currentTarget.reset(); setDeviceMessage('Tablet registered successfully.'); await Promise.all([loadDevices(), loadBranches(), loadOverview()]);
+    } catch (error: any) { setDeviceMessage(error.message); }
+  };
+
+  const updateDevice = async (device: Device, changes: Record<string, unknown>, successMessage = 'Tablet updated successfully.') => {
+    setDeviceMessage('');
+    try { await fetchJson(`${API_URL}/v1/admin/devices/${device.id}`, { method: 'PATCH', body: JSON.stringify(changes) }); setDeviceMessage(successMessage); await Promise.all([loadDevices(), loadBranches(), loadOverview()]); }
+    catch (error: any) { setDeviceMessage(error.message); }
+  };
+
+  const editDevice = async (device: Device) => {
+    const name = window.prompt('Tablet name', device.name); if (name === null) return;
+    if (!name.trim()) return setDeviceMessage('Tablet name is required.');
+    await updateDevice(device, { name: name.trim() }, 'Tablet name updated.');
   };
 
   const filteredEmployees = useMemo(() => {
@@ -205,16 +206,17 @@ function App() {
     return branches.filter(branch => (branchFilter === 'all' || (branchFilter === 'active' ? branch.active : !branch.active)) && (!q || `${branch.name} ${branch.address ?? ''} ${branch.timezone}`.toLowerCase().includes(q)));
   }, [branches, branchSearch, branchFilter]);
 
+  const filteredDevices = useMemo(() => {
+    const q = deviceSearch.trim().toLowerCase();
+    return devices.filter(device => (deviceFilter === 'all' || (deviceFilter === 'active' ? device.active : !device.active)) && (!q || `${device.name} ${device.branchName}`.toLowerCase().includes(q)));
+  }, [devices, deviceSearch, deviceFilter]);
+
   if (!token) return <main className="loginShell"><section className="loginCard">
     <span className="eyebrow">ATTENDRA HQ</span><h1>Manager sign in</h1><p>Secure access to workforce attendance and employee management.</p>
-    <form onSubmit={login} className="loginForm">
-      <label>Email<input name="email" type="email" autoComplete="username" required /></label>
-      <label>Password<input name="password" type="password" autoComplete="current-password" minLength={8} required /></label>
-      {loginError && <div className="errorBox">{loginError}</div>}<button type="submit" className="primary">Sign in</button>
-    </form>
+    <form onSubmit={login} className="loginForm"><label>Email<input name="email" type="email" autoComplete="username" required /></label><label>Password<input name="password" type="password" autoComplete="current-password" minLength={8} required /></label>{loginError && <div className="errorBox">{loginError}</div>}<button type="submit" className="primary">Sign in</button></form>
   </section></main>;
 
-  const title = activeTab === 'overview' ? 'Workforce overview' : activeTab === 'employees' ? 'Employees' : 'Branches';
+  const title = activeTab === 'overview' ? 'Workforce overview' : activeTab === 'employees' ? 'Employees' : activeTab === 'branches' ? 'Branches' : 'Devices';
 
   return <main className="shell">
     <header><div><span className="eyebrow">ATTENDRA HQ</span><h1>{title}</h1></div><div className="headerActions"><span className={`badge ${connected ? 'online' : ''}`}>{connected ? 'Live' : 'Connecting'}</span><button className="linkButton" onClick={logout}>Sign out</button></div></header>
@@ -222,6 +224,7 @@ function App() {
       <button className={activeTab === 'overview' ? 'active' : ''} onClick={() => setActiveTab('overview')}>Overview</button>
       <button className={activeTab === 'employees' ? 'active' : ''} onClick={() => { setActiveTab('employees'); loadEmployees(); }}>Employees</button>
       <button className={activeTab === 'branches' ? 'active' : ''} onClick={() => { setActiveTab('branches'); loadBranches(); }}>Branches</button>
+      <button className={activeTab === 'devices' ? 'active' : ''} onClick={() => { setActiveTab('devices'); loadDevices(); loadBranches(); }}>Devices</button>
       <span className="adminIdentity">{adminEmail}</span>
     </nav>
 
@@ -238,6 +241,11 @@ function App() {
     {activeTab === 'branches' && <>
       <section className="panel branchFormPanel"><div className="panelHead"><div><h2>Add branch</h2><span>Create a workplace location and assign its timezone.</span></div></div><form onSubmit={addBranch} className="branchForm"><label>Branch name<input name="name" placeholder="e.g. Manchester City Centre" required /></label><label>Timezone<input name="timezone" placeholder="e.g. Europe/London" defaultValue="Europe/London" required /></label><label className="wideField">Address<input name="address" placeholder="Street, city, postcode" /></label><button className="primary" type="submit">Add branch</button></form>{branchMessage && <div className="infoBox">{branchMessage}</div>}</section>
       <section className="panel"><div className="panelHead"><div><h2>Branch directory</h2><span>{branches.filter(b => b.active).length} active · {branches.length} total</span></div></div><div className="directoryTools"><input value={branchSearch} onChange={e => setBranchSearch(e.target.value)} placeholder="Search branch, address or timezone" /><select value={branchFilter} onChange={e => setBranchFilter(e.target.value as any)}><option value="all">All branches</option><option value="active">Active only</option><option value="inactive">Inactive only</option></select></div><div className="branchList">{filteredBranches.length === 0 ? <p className="empty">No branches match this search.</p> : filteredBranches.map(branch => <div className="branchRow" key={branch.id}><div className="branchSummary"><strong>{branch.name}</strong><span>{branch.address || 'No address added'}</span><small>{branch.timezone} · {branch.deviceCount ?? 0} active device{(branch.deviceCount ?? 0) === 1 ? '' : 's'} · {branch.active ? 'Active' : 'Inactive'}</small></div><div className="rowActions"><button onClick={() => editBranch(branch)}>Edit</button><button className={branch.active ? 'dangerAction' : ''} onClick={() => updateBranch(branch, { active: !branch.active }, branch.active ? 'Branch deactivated.' : 'Branch activated.')}>{branch.active ? 'Deactivate' : 'Activate'}</button></div></div>)}</div></section>
+    </>}
+
+    {activeTab === 'devices' && <>
+      <section className="panel branchFormPanel"><div className="panelHead"><div><h2>Register tablet</h2><span>Authorise an attendance tablet and assign it to a branch.</span></div></div><form onSubmit={addDevice} className="branchForm"><label>Tablet name<input name="name" placeholder="e.g. Reception Tablet" required /></label><label>Branch<select name="branchId" required defaultValue=""><option value="" disabled>Select branch</option>{branches.filter(b => b.active).map(branch => <option key={branch.id} value={branch.id}>{branch.name}</option>)}</select></label><button className="primary" type="submit" disabled={branches.filter(b => b.active).length === 0}>Register tablet</button></form>{deviceMessage && <div className="infoBox">{deviceMessage}</div>}</section>
+      <section className="panel"><div className="panelHead"><div><h2>Device directory</h2><span>{devices.filter(d => d.active).length} active · {devices.filter(d => d.online).length} online · {devices.length} total</span></div></div><div className="directoryTools"><input value={deviceSearch} onChange={e => setDeviceSearch(e.target.value)} placeholder="Search tablet or branch" /><select value={deviceFilter} onChange={e => setDeviceFilter(e.target.value as any)}><option value="all">All devices</option><option value="active">Active only</option><option value="inactive">Inactive only</option></select></div><div className="branchList">{filteredDevices.length === 0 ? <p className="empty">No devices match this search.</p> : filteredDevices.map(device => <div className="branchRow" key={device.id}><div className="branchSummary"><strong>{device.name}</strong><span>{device.branchName}</span><small>{device.online ? 'Online' : 'Offline'} · {device.active ? 'Active' : 'Inactive'} · {device.lastSeenAt ? `Last seen ${new Date(device.lastSeenAt).toLocaleString()}` : 'Never seen'}</small></div><div className="rowActions"><button onClick={() => editDevice(device)}>Edit</button><button className={device.active ? 'dangerAction' : ''} onClick={() => updateDevice(device, { active: !device.active }, device.active ? 'Tablet deactivated.' : 'Tablet activated.')}>{device.active ? 'Deactivate' : 'Activate'}</button></div></div>)}</div></section>
     </>}
   </main>;
 }
