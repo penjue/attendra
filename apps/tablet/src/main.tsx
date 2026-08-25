@@ -9,6 +9,16 @@ const BRANCH_ID = env.VITE_BRANCH_ID ?? '';
 const DEVICE_ID = env.VITE_DEVICE_ID ?? '';
 const BRANCH_NAME = env.VITE_BRANCH_NAME ?? 'Attendra Branch';
 
+type AttendanceStatus = 'ON_TIME' | 'LATE' | 'EARLY' | 'UNSCHEDULED';
+
+const statusText = (status: AttendanceStatus | undefined) => {
+  if (status === 'ON_TIME') return 'You are on time.';
+  if (status === 'LATE') return 'Your check-in has been recorded as late.';
+  if (status === 'EARLY') return 'You have checked in early.';
+  if (status === 'UNSCHEDULED') return 'No matching scheduled shift was found.';
+  return '';
+};
+
 function App() {
   const [employee, setEmployee] = useState('');
   const [pin, setPin] = useState('');
@@ -47,9 +57,11 @@ function App() {
         throw new Error(text);
       }
 
+      const attendanceStatus = data.event?.status as AttendanceStatus | undefined;
+      const detail = action === 'CHECK_IN' ? statusText(attendanceStatus) : '';
       setMessage({
         type: 'success',
-        text: `${data.employee.name}, you are ${action === 'CHECK_IN' ? 'checked in' : 'checked out'} successfully.`
+        text: `${data.employee.name}, you are ${action === 'CHECK_IN' ? 'checked in' : 'checked out'} successfully.${detail ? ` ${detail}` : ''}`
       });
       setEmployee('');
       setPin('');
