@@ -7,7 +7,8 @@ type AttendanceEvent = { id: string; action: 'CHECK_IN' | 'CHECK_OUT'; status: '
 type Employee = { id: string; employeeNumber: string; firstName: string; lastName: string; hourlyWorker: boolean; active: boolean; createdAt: string };
 type Branch = { id: string; name: string; timezone: string; address: string | null; active: boolean; createdAt: string; deviceCount?: number };
 type Device = { id: string; name: string; branchId: string; branchName: string; lastSeenAt: string | null; active: boolean; online: boolean; createdAt: string };
-type Tab = 'overview' | 'employees' | 'branches' | 'devices';
+type Shift = { id: string; employeeId: string; employeeName: string; employeeNumber: string; branchId: string; branchName: string; startsAt: string; endsAt: string; breakMinutes: number; createdAt: string };
+type Tab = 'overview' | 'employees' | 'branches' | 'devices' | 'shifts';
 
 const env = (import.meta as any).env as Record<string, string | undefined>;
 const API_URL = env.VITE_API_URL ?? 'http://localhost:4000';
@@ -23,6 +24,7 @@ function App() {
   const [employees, setEmployees] = useState<Employee[]>([]);
   const [branches, setBranches] = useState<Branch[]>([]);
   const [devices, setDevices] = useState<Device[]>([]);
+  const [shifts, setShifts] = useState<Shift[]>([]);
   const [connected, setConnected] = useState(false);
   const [employeeMessage, setEmployeeMessage] = useState('');
   const [employeeSearch, setEmployeeSearch] = useState('');
@@ -33,6 +35,9 @@ function App() {
   const [deviceMessage, setDeviceMessage] = useState('');
   const [deviceSearch, setDeviceSearch] = useState('');
   const [deviceFilter, setDeviceFilter] = useState<'all' | 'active' | 'inactive'>('all');
+  const [shiftMessage, setShiftMessage] = useState('');
+  const [shiftSearch, setShiftSearch] = useState('');
+  const [shiftFilter, setShiftFilter] = useState<'upcoming' | 'all' | 'past'>('upcoming');
 
   const makeHeaders = (extra?: HeadersInit) => {
     const headers = new Headers(extra);
@@ -44,17 +49,12 @@ function App() {
   const logout = () => {
     sessionStorage.removeItem('attendra_admin_token');
     sessionStorage.removeItem('attendra_admin_email');
-    setToken('');
-    setAdminEmail('');
-    setConnected(false);
+    setToken(''); setAdminEmail(''); setConnected(false);
   };
 
   const fetchJson = async (url: string, init: RequestInit = {}) => {
     const response = await fetch(url, { ...init, headers: makeHeaders(init.headers) });
-    if (response.status === 401) {
-      logout();
-      throw new Error('Session expired');
-    }
+    if (response.status === 401) { logout(); throw new Error('Session expired'); }
     const data = await response.json();
     if (!response.ok) throw new Error(data.error ?? 'Request failed');
     return data;
@@ -67,63 +67,48 @@ function App() {
         fetchJson(`${API_URL}/v1/companies/${COMPANY_ID}/attendance/summary`),
         fetchJson(`${API_URL}/v1/companies/${COMPANY_ID}/attendance/recent`)
       ]);
-      setSummary(summaryData.summary);
-      setEvents(eventsData.events);
-      setConnected(true);
-    } catch {
-      setConnected(false);
-    }
+      setSummary(summaryData.summary); setEvents(eventsData.events); setConnected(true);
+    } catch { setConnected(false); }
   };
 
   const loadEmployees = async () => {
     if (!token) return;
-    try {
-      const data = await fetchJson(`${API_URL}/v1/admin/employees`);
-      setEmployees(data.employees);
-    } catch (error: any) { setEmployeeMessage(error.message); }
+    try { const data = await fetchJson(`${API_URL}/v1/admin/employees`); setEmployees(data.employees); }
+    catch (error: any) { setEmployeeMessage(error.message); }
   };
 
   const loadBranches = async () => {
     if (!token) return;
-    try {
-      const data = await fetchJson(`${API_URL}/v1/admin/branches`);
-      setBranches(data.branches);
-    } catch (error: any) { setBranchMessage(error.message); }
+    try { const data = await fetchJson(`${API_URL}/v1/admin/branches`); setBranches(data.branches); }
+    catch (error: any) { setBranchMessage(error.message); }
   };
 
   const loadDevices = async () => {
     if (!token) return;
-    try {
-      const data = await fetchJson(`${API_URL}/v1/admin/devices`);
-      setDevices(data.devices);
-    } catch (error: any) { setDeviceMessage(error.message); }
+    try { const data = await fetchJson(`${API_URL}/v1/admin/devices`); setDevices(data.devices); }
+    catch (error: any) { setDeviceMessage(error.message); }
+  };
+
+  const loadShifts = async () => {
+    if (!token) return;
+    try { const data = await fetchJson(`${API_URL}/v1/admin/shifts`); setShifts(data.shifts); }
+    catch (error: any) { setShiftMessage(error.message); }
   };
 
   useEffect(() => {
     if (!token) return;
-    loadOverview();
-    loadEmployees();
-    loadBranches();
-    loadDevices();
+    loadOverview(); loadEmployees(); loadBranches(); loadDevices(); loadShifts();
     const timer = window.setInterval(loadOverview, 5000);
     return () => window.clearInterval(timer);
   }, [token]);
 
   const login = async (event: FormEvent<HTMLFormElement>) => {
-    event.preventDefault();
-    setLoginError('');
-    const form = new FormData(event.currentTarget);
+    event.preventDefault(); setLoginError(''); const form = new FormData(event.currentTarget);
     try {
       const response = await fetch(`${API_URL}/v1/admin/login`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ email: form.get('email'), password: form.get('password') }) });
-      const data = await response.json();
-      if (!response.ok) throw new Error(data.error ?? 'Login failed');
-      sessionStorage.setItem('attendra_admin_token', data.token);
-      sessionStorage.setItem('attendra_admin_email', data.email);
-      setToken(data.token);
-      setAdminEmail(data.email);
-    } catch (error: any) {
-      setLoginError(error.message === 'ADMIN_NOT_CONFIGURED' ? 'Admin login has not been configured on the server yet.' : 'Email or password is incorrect.');
-    }
+      const data = await response.json(); if (!response.ok) throw new Error(data.error ?? 'Login failed');
+      sessionStorage.setItem('attendra_admin_token', data.token); sessionStorage.setItem('attendra_admin_email', data.email); setToken(data.token); setAdminEmail(data.email);
+    } catch (error: any) { setLoginError(error.message === 'ADMIN_NOT_CONFIGURED' ? 'Admin login has not been configured on the server yet.' : 'Email or password is incorrect.'); }
   };
 
   const addEmployee = async (event: FormEvent<HTMLFormElement>) => {
@@ -141,8 +126,7 @@ function App() {
   };
 
   const resetPin = async (employee: Employee) => {
-    const pin = window.prompt(`Enter a new 4–12 digit PIN for ${employee.firstName} ${employee.lastName}`);
-    if (pin === null) return;
+    const pin = window.prompt(`Enter a new 4–12 digit PIN for ${employee.firstName} ${employee.lastName}`); if (pin === null) return;
     if (!/^\d{4,12}$/.test(pin)) return setEmployeeMessage('PIN must contain 4–12 digits.');
     await updateEmployee(employee, { pin }, 'PIN reset successfully.');
   };
@@ -156,10 +140,8 @@ function App() {
 
   const addBranch = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault(); setBranchMessage(''); const form = new FormData(event.currentTarget);
-    try {
-      await fetchJson(`${API_URL}/v1/admin/branches`, { method: 'POST', body: JSON.stringify({ name: form.get('name'), timezone: form.get('timezone'), address: form.get('address') }) });
-      event.currentTarget.reset(); setBranchMessage('Branch added successfully.'); await loadBranches();
-    } catch (error: any) { setBranchMessage(error.message); }
+    try { await fetchJson(`${API_URL}/v1/admin/branches`, { method: 'POST', body: JSON.stringify({ name: form.get('name'), timezone: form.get('timezone'), address: form.get('address') }) }); event.currentTarget.reset(); setBranchMessage('Branch added successfully.'); await loadBranches(); }
+    catch (error: any) { setBranchMessage(error.message); }
   };
 
   const updateBranch = async (branch: Branch, changes: Record<string, unknown>, successMessage = 'Branch updated successfully.') => {
@@ -178,10 +160,8 @@ function App() {
 
   const addDevice = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault(); setDeviceMessage(''); const form = new FormData(event.currentTarget);
-    try {
-      await fetchJson(`${API_URL}/v1/admin/devices`, { method: 'POST', body: JSON.stringify({ name: form.get('name'), branchId: form.get('branchId') }) });
-      event.currentTarget.reset(); setDeviceMessage('Tablet registered successfully.'); await Promise.all([loadDevices(), loadBranches(), loadOverview()]);
-    } catch (error: any) { setDeviceMessage(error.message); }
+    try { await fetchJson(`${API_URL}/v1/admin/devices`, { method: 'POST', body: JSON.stringify({ name: form.get('name'), branchId: form.get('branchId') }) }); event.currentTarget.reset(); setDeviceMessage('Tablet registered successfully.'); await Promise.all([loadDevices(), loadBranches(), loadOverview()]); }
+    catch (error: any) { setDeviceMessage(error.message); }
   };
 
   const updateDevice = async (device: Device, changes: Record<string, unknown>, successMessage = 'Tablet updated successfully.') => {
@@ -194,6 +174,23 @@ function App() {
     const name = window.prompt('Tablet name', device.name); if (name === null) return;
     if (!name.trim()) return setDeviceMessage('Tablet name is required.');
     await updateDevice(device, { name: name.trim() }, 'Tablet name updated.');
+  };
+
+  const addShift = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault(); setShiftMessage(''); const form = new FormData(event.currentTarget);
+    try {
+      const startsAt = new Date(String(form.get('startsAt'))).toISOString();
+      const endsAt = new Date(String(form.get('endsAt'))).toISOString();
+      await fetchJson(`${API_URL}/v1/admin/shifts`, { method: 'POST', body: JSON.stringify({ employeeId: form.get('employeeId'), branchId: form.get('branchId'), startsAt, endsAt, breakMinutes: Number(form.get('breakMinutes') || 0) }) });
+      event.currentTarget.reset(); setShiftMessage('Shift scheduled successfully.'); await loadShifts();
+    } catch (error: any) { setShiftMessage(error.message === 'SHIFT_END_MUST_BE_AFTER_START' ? 'Shift end time must be after the start time.' : error.message); }
+  };
+
+  const deleteShift = async (shift: Shift) => {
+    if (!window.confirm(`Delete ${shift.employeeName}'s shift at ${shift.branchName}?`)) return;
+    setShiftMessage('');
+    try { await fetchJson(`${API_URL}/v1/admin/shifts/${shift.id}`, { method: 'DELETE' }); setShiftMessage('Shift deleted.'); await loadShifts(); }
+    catch (error: any) { setShiftMessage(error.message === 'SHIFT_HAS_ATTENDANCE' ? 'This shift already has attendance records and cannot be deleted.' : error.message); }
   };
 
   const filteredEmployees = useMemo(() => {
@@ -211,12 +208,21 @@ function App() {
     return devices.filter(device => (deviceFilter === 'all' || (deviceFilter === 'active' ? device.active : !device.active)) && (!q || `${device.name} ${device.branchName}`.toLowerCase().includes(q)));
   }, [devices, deviceSearch, deviceFilter]);
 
+  const filteredShifts = useMemo(() => {
+    const q = shiftSearch.trim().toLowerCase(); const now = Date.now();
+    return shifts.filter(shift => {
+      const start = new Date(shift.startsAt).getTime(), end = new Date(shift.endsAt).getTime();
+      const period = shiftFilter === 'all' || (shiftFilter === 'upcoming' ? end >= now : end < now);
+      return period && (!q || `${shift.employeeName} ${shift.employeeNumber} ${shift.branchName}`.toLowerCase().includes(q));
+    });
+  }, [shifts, shiftSearch, shiftFilter]);
+
   if (!token) return <main className="loginShell"><section className="loginCard">
     <span className="eyebrow">ATTENDRA HQ</span><h1>Manager sign in</h1><p>Secure access to workforce attendance and employee management.</p>
     <form onSubmit={login} className="loginForm"><label>Email<input name="email" type="email" autoComplete="username" required /></label><label>Password<input name="password" type="password" autoComplete="current-password" minLength={8} required /></label>{loginError && <div className="errorBox">{loginError}</div>}<button type="submit" className="primary">Sign in</button></form>
   </section></main>;
 
-  const title = activeTab === 'overview' ? 'Workforce overview' : activeTab === 'employees' ? 'Employees' : activeTab === 'branches' ? 'Branches' : 'Devices';
+  const title = activeTab === 'overview' ? 'Workforce overview' : activeTab === 'employees' ? 'Employees' : activeTab === 'branches' ? 'Branches' : activeTab === 'devices' ? 'Devices' : 'Shifts';
 
   return <main className="shell">
     <header><div><span className="eyebrow">ATTENDRA HQ</span><h1>{title}</h1></div><div className="headerActions"><span className={`badge ${connected ? 'online' : ''}`}>{connected ? 'Live' : 'Connecting'}</span><button className="linkButton" onClick={logout}>Sign out</button></div></header>
@@ -225,6 +231,7 @@ function App() {
       <button className={activeTab === 'employees' ? 'active' : ''} onClick={() => { setActiveTab('employees'); loadEmployees(); }}>Employees</button>
       <button className={activeTab === 'branches' ? 'active' : ''} onClick={() => { setActiveTab('branches'); loadBranches(); }}>Branches</button>
       <button className={activeTab === 'devices' ? 'active' : ''} onClick={() => { setActiveTab('devices'); loadDevices(); loadBranches(); }}>Devices</button>
+      <button className={activeTab === 'shifts' ? 'active' : ''} onClick={() => { setActiveTab('shifts'); loadShifts(); loadEmployees(); loadBranches(); }}>Shifts</button>
       <span className="adminIdentity">{adminEmail}</span>
     </nav>
 
@@ -246,6 +253,11 @@ function App() {
     {activeTab === 'devices' && <>
       <section className="panel branchFormPanel"><div className="panelHead"><div><h2>Register tablet</h2><span>Authorise an attendance tablet and assign it to a branch.</span></div></div><form onSubmit={addDevice} className="branchForm"><label>Tablet name<input name="name" placeholder="e.g. Reception Tablet" required /></label><label>Branch<select name="branchId" required defaultValue=""><option value="" disabled>Select branch</option>{branches.filter(b => b.active).map(branch => <option key={branch.id} value={branch.id}>{branch.name}</option>)}</select></label><button className="primary" type="submit" disabled={branches.filter(b => b.active).length === 0}>Register tablet</button></form>{deviceMessage && <div className="infoBox">{deviceMessage}</div>}</section>
       <section className="panel"><div className="panelHead"><div><h2>Device directory</h2><span>{devices.filter(d => d.active).length} active · {devices.filter(d => d.online).length} online · {devices.length} total</span></div></div><div className="directoryTools"><input value={deviceSearch} onChange={e => setDeviceSearch(e.target.value)} placeholder="Search tablet or branch" /><select value={deviceFilter} onChange={e => setDeviceFilter(e.target.value as any)}><option value="all">All devices</option><option value="active">Active only</option><option value="inactive">Inactive only</option></select></div><div className="branchList">{filteredDevices.length === 0 ? <p className="empty">No devices match this search.</p> : filteredDevices.map(device => <div className="branchRow" key={device.id}><div className="branchSummary"><strong>{device.name}</strong><span>{device.branchName}</span><small>{device.online ? 'Online' : 'Offline'} · {device.active ? 'Active' : 'Inactive'} · {device.lastSeenAt ? `Last seen ${new Date(device.lastSeenAt).toLocaleString()}` : 'Never seen'}</small></div><div className="rowActions"><button onClick={() => editDevice(device)}>Edit</button><button className={device.active ? 'dangerAction' : ''} onClick={() => updateDevice(device, { active: !device.active }, device.active ? 'Tablet deactivated.' : 'Tablet activated.')}>{device.active ? 'Deactivate' : 'Activate'}</button></div></div>)}</div></section>
+    </>}
+
+    {activeTab === 'shifts' && <>
+      <section className="panel branchFormPanel"><div className="panelHead"><div><h2>Schedule shift</h2><span>Assign an employee to a branch and define working hours.</span></div></div><form onSubmit={addShift} className="shiftForm"><label>Employee<select name="employeeId" required defaultValue=""><option value="" disabled>Select employee</option>{employees.filter(e => e.active).map(employee => <option key={employee.id} value={employee.id}>{employee.firstName} {employee.lastName} · #{employee.employeeNumber}</option>)}</select></label><label>Branch<select name="branchId" required defaultValue=""><option value="" disabled>Select branch</option>{branches.filter(b => b.active).map(branch => <option key={branch.id} value={branch.id}>{branch.name}</option>)}</select></label><label>Starts<input name="startsAt" type="datetime-local" required /></label><label>Ends<input name="endsAt" type="datetime-local" required /></label><label>Break minutes<input name="breakMinutes" type="number" min="0" max="720" defaultValue="0" required /></label><button className="primary" type="submit" disabled={!employees.some(e => e.active) || !branches.some(b => b.active)}>Schedule shift</button></form><p className="formHint">Times use the timezone configured on this device. Branch-specific timezone scheduling will be added before international rollout.</p>{shiftMessage && <div className="infoBox">{shiftMessage}</div>}</section>
+      <section className="panel"><div className="panelHead"><div><h2>Shift schedule</h2><span>{shifts.filter(s => new Date(s.endsAt).getTime() >= Date.now()).length} upcoming · {shifts.length} total</span></div></div><div className="directoryTools"><input value={shiftSearch} onChange={e => setShiftSearch(e.target.value)} placeholder="Search employee or branch" /><select value={shiftFilter} onChange={e => setShiftFilter(e.target.value as any)}><option value="upcoming">Upcoming & current</option><option value="all">All shifts</option><option value="past">Past shifts</option></select></div><div className="branchList">{filteredShifts.length === 0 ? <p className="empty">No shifts match this view.</p> : filteredShifts.map(shift => { const now=Date.now(),start=new Date(shift.startsAt).getTime(),end=new Date(shift.endsAt).getTime(); const state=now<start?'Upcoming':now<=end?'In progress':'Completed'; return <div className="branchRow" key={shift.id}><div className="branchSummary"><strong>{shift.employeeName}</strong><span>#{shift.employeeNumber} · {shift.branchName}</span><small>{state} · {new Date(shift.startsAt).toLocaleString()} → {new Date(shift.endsAt).toLocaleString()} · {shift.breakMinutes} min break</small></div><div className="rowActions"><button className="dangerAction" onClick={() => deleteShift(shift)}>Delete</button></div></div> })}</div></section>
     </>}
   </main>;
 }
