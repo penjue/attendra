@@ -201,8 +201,8 @@ function App() {
   const deleteShift = async (shift: Shift) => {
     if (!window.confirm(`Delete ${shift.employeeName}'s shift at ${shift.branchName}?`)) return;
     setShiftMessage('');
-    try { await fetchJson(`${API_URL}/v1/admin/shifts/${shift.id}`, { method: 'DELETE' }); setShiftMessage('Shift deleted.'); await loadShifts(); }
-    catch (error: any) { setShiftMessage(error.message === 'SHIFT_HAS_ATTENDANCE' ? 'This shift already has attendance records and cannot be deleted.' : error.message); }
+    try { await fetchJson(`${API_URL}/v1/admin/shifts/${shift.id}`, { method: 'DELETE', body: '{}' }); setShiftMessage('Shift deleted.'); await loadShifts(); }
+    catch (error: any) { setShiftMessage(error.message === 'SHIFT_HAS_ATTENDANCE' ? 'This shift already has attendance records and cannot be deleted.' : error.message === 'Bad Request' ? 'Unable to delete this shift. Please refresh and try again.' : error.message); }
   };
 
   const filteredEmployees = useMemo(() => {
