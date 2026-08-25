@@ -5,6 +5,8 @@ import './styles.css';
 type Summary = { checkedInNow: number; lateToday: number; absent: number; offlineDevices: number };
 type AttendanceEvent = { id: string; action: 'CHECK_IN' | 'CHECK_OUT'; status: 'ON_TIME' | 'LATE' | 'EARLY' | 'UNSCHEDULED'; occurredAt: string; employeeNumber: string; employeeName: string; branchName: string };
 type Employee = { id: string; employeeNumber: string; firstName: string; lastName: string; hourlyWorker: boolean; active: boolean; createdAt: string };
+type Branch = { id: string; name: string; timezone: string; address: string | null; active: boolean; createdAt: string; deviceCount?: number };
+type Tab = 'overview' | 'employees' | 'branches';
 
 const env = (import.meta as any).env as Record<string, string | undefined>;
 const API_URL = env.VITE_API_URL ?? 'http://localhost:4000';
@@ -14,14 +16,18 @@ function App() {
   const [token, setToken] = useState(() => sessionStorage.getItem('attendra_admin_token') ?? '');
   const [adminEmail, setAdminEmail] = useState(() => sessionStorage.getItem('attendra_admin_email') ?? '');
   const [loginError, setLoginError] = useState('');
-  const [activeTab, setActiveTab] = useState<'overview' | 'employees'>('overview');
+  const [activeTab, setActiveTab] = useState<Tab>('overview');
   const [summary, setSummary] = useState<Summary>({ checkedInNow: 0, lateToday: 0, absent: 0, offlineDevices: 0 });
   const [events, setEvents] = useState<AttendanceEvent[]>([]);
   const [employees, setEmployees] = useState<Employee[]>([]);
+  const [branches, setBranches] = useState<Branch[]>([]);
   const [connected, setConnected] = useState(false);
   const [employeeMessage, setEmployeeMessage] = useState('');
   const [employeeSearch, setEmployeeSearch] = useState('');
   const [employeeFilter, setEmployeeFilter] = useState<'all' | 'active' | 'inactive'>('all');
+  const [branchMessage, setBranchMessage] = useState('');
+  const [branchSearch, setBranchSearch] = useState('');
+  const [branchFilter, setBranchFilter] = useState<'all' | 'active' | 'inactive'>('all');
 
   const makeHeaders = (extra?: HeadersInit) => {
     const headers = new Headers(extra);
@@ -74,10 +80,21 @@ function App() {
     }
   };
 
+  const loadBranches = async () => {
+    if (!token) return;
+    try {
+      const data = await fetchJson(`${API_URL}/v1/admin/branches`);
+      setBranches(data.branches);
+    } catch (error: any) {
+      setBranchMessage(error.message);
+    }
+  };
+
   useEffect(() => {
     if (!token) return;
     loadOverview();
     loadEmployees();
+    loadBranches();
     const timer = window.setInterval(loadOverview, 5000);
     return () => window.clearInterval(timer);
   }, [token]);
@@ -111,11 +128,8 @@ function App() {
       await fetchJson(`${API_URL}/v1/admin/employees`, {
         method: 'POST',
         body: JSON.stringify({
-          employeeNumber: form.get('employeeNumber'),
-          firstName: form.get('firstName'),
-          lastName: form.get('lastName'),
-          pin: form.get('pin'),
-          hourlyWorker: form.get('hourlyWorker') === 'on'
+          employeeNumber: form.get('employeeNumber'), firstName: form.get('firstName'), lastName: form.get('lastName'),
+          pin: form.get('pin'), hourlyWorker: form.get('hourlyWorker') === 'on'
         })
       });
       event.currentTarget.reset();
@@ -132,117 +146,98 @@ function App() {
       await fetchJson(`${API_URL}/v1/admin/employees/${employee.id}`, { method: 'PATCH', body: JSON.stringify(changes) });
       setEmployeeMessage(successMessage);
       await loadEmployees();
-    } catch (error: any) {
-      setEmployeeMessage(error.message);
-    }
+    } catch (error: any) { setEmployeeMessage(error.message); }
   };
 
   const resetPin = async (employee: Employee) => {
     const pin = window.prompt(`Enter a new 4–12 digit PIN for ${employee.firstName} ${employee.lastName}`);
     if (pin === null) return;
-    if (!/^\d{4,12}$/.test(pin)) {
-      setEmployeeMessage('PIN must contain 4–12 digits.');
-      return;
-    }
+    if (!/^\d{4,12}$/.test(pin)) return setEmployeeMessage('PIN must contain 4–12 digits.');
     await updateEmployee(employee, { pin }, 'PIN reset successfully.');
   };
 
   const editEmployee = async (employee: Employee) => {
-    const firstName = window.prompt('First name', employee.firstName);
-    if (firstName === null) return;
-    const lastName = window.prompt('Last name', employee.lastName);
-    if (lastName === null) return;
-    if (!firstName.trim() || !lastName.trim()) {
-      setEmployeeMessage('First name and last name are required.');
-      return;
-    }
+    const firstName = window.prompt('First name', employee.firstName); if (firstName === null) return;
+    const lastName = window.prompt('Last name', employee.lastName); if (lastName === null) return;
+    if (!firstName.trim() || !lastName.trim()) return setEmployeeMessage('First name and last name are required.');
     await updateEmployee(employee, { firstName: firstName.trim(), lastName: lastName.trim() }, 'Employee details updated.');
+  };
+
+  const addBranch = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    setBranchMessage('');
+    const form = new FormData(event.currentTarget);
+    try {
+      await fetchJson(`${API_URL}/v1/admin/branches`, {
+        method: 'POST',
+        body: JSON.stringify({ name: form.get('name'), timezone: form.get('timezone'), address: form.get('address') })
+      });
+      event.currentTarget.reset();
+      setBranchMessage('Branch added successfully.');
+      await loadBranches();
+    } catch (error: any) { setBranchMessage(error.message); }
+  };
+
+  const updateBranch = async (branch: Branch, changes: Record<string, unknown>, successMessage = 'Branch updated successfully.') => {
+    setBranchMessage('');
+    try {
+      await fetchJson(`${API_URL}/v1/admin/branches/${branch.id}`, { method: 'PATCH', body: JSON.stringify(changes) });
+      setBranchMessage(successMessage);
+      await loadBranches();
+    } catch (error: any) { setBranchMessage(error.message); }
+  };
+
+  const editBranch = async (branch: Branch) => {
+    const name = window.prompt('Branch name', branch.name); if (name === null) return;
+    const timezone = window.prompt('Timezone', branch.timezone); if (timezone === null) return;
+    const address = window.prompt('Address', branch.address ?? ''); if (address === null) return;
+    if (!name.trim() || !timezone.trim()) return setBranchMessage('Branch name and timezone are required.');
+    await updateBranch(branch, { name: name.trim(), timezone: timezone.trim(), address: address.trim() }, 'Branch details updated.');
   };
 
   const filteredEmployees = useMemo(() => {
     const q = employeeSearch.trim().toLowerCase();
-    return employees.filter(employee => {
-      const matchesStatus = employeeFilter === 'all' || (employeeFilter === 'active' ? employee.active : !employee.active);
-      const matchesSearch = !q || `${employee.firstName} ${employee.lastName} ${employee.employeeNumber}`.toLowerCase().includes(q);
-      return matchesStatus && matchesSearch;
-    });
+    return employees.filter(employee => (employeeFilter === 'all' || (employeeFilter === 'active' ? employee.active : !employee.active)) && (!q || `${employee.firstName} ${employee.lastName} ${employee.employeeNumber}`.toLowerCase().includes(q)));
   }, [employees, employeeSearch, employeeFilter]);
 
-  if (!token) return <main className="loginShell">
-    <section className="loginCard">
-      <span className="eyebrow">ATTENDRA HQ</span>
-      <h1>Manager sign in</h1>
-      <p>Secure access to workforce attendance and employee management.</p>
-      <form onSubmit={login} className="loginForm">
-        <label>Email<input name="email" type="email" autoComplete="username" required /></label>
-        <label>Password<input name="password" type="password" autoComplete="current-password" minLength={8} required /></label>
-        {loginError && <div className="errorBox">{loginError}</div>}
-        <button type="submit" className="primary">Sign in</button>
-      </form>
-    </section>
-  </main>;
+  const filteredBranches = useMemo(() => {
+    const q = branchSearch.trim().toLowerCase();
+    return branches.filter(branch => (branchFilter === 'all' || (branchFilter === 'active' ? branch.active : !branch.active)) && (!q || `${branch.name} ${branch.address ?? ''} ${branch.timezone}`.toLowerCase().includes(q)));
+  }, [branches, branchSearch, branchFilter]);
+
+  if (!token) return <main className="loginShell"><section className="loginCard">
+    <span className="eyebrow">ATTENDRA HQ</span><h1>Manager sign in</h1><p>Secure access to workforce attendance and employee management.</p>
+    <form onSubmit={login} className="loginForm">
+      <label>Email<input name="email" type="email" autoComplete="username" required /></label>
+      <label>Password<input name="password" type="password" autoComplete="current-password" minLength={8} required /></label>
+      {loginError && <div className="errorBox">{loginError}</div>}<button type="submit" className="primary">Sign in</button>
+    </form>
+  </section></main>;
+
+  const title = activeTab === 'overview' ? 'Workforce overview' : activeTab === 'employees' ? 'Employees' : 'Branches';
 
   return <main className="shell">
-    <header>
-      <div><span className="eyebrow">ATTENDRA HQ</span><h1>{activeTab === 'overview' ? 'Workforce overview' : 'Employees'}</h1></div>
-      <div className="headerActions"><span className={`badge ${connected ? 'online' : ''}`}>{connected ? 'Live' : 'Connecting'}</span><button className="linkButton" onClick={logout}>Sign out</button></div>
-    </header>
-
+    <header><div><span className="eyebrow">ATTENDRA HQ</span><h1>{title}</h1></div><div className="headerActions"><span className={`badge ${connected ? 'online' : ''}`}>{connected ? 'Live' : 'Connecting'}</span><button className="linkButton" onClick={logout}>Sign out</button></div></header>
     <nav className="tabs">
       <button className={activeTab === 'overview' ? 'active' : ''} onClick={() => setActiveTab('overview')}>Overview</button>
       <button className={activeTab === 'employees' ? 'active' : ''} onClick={() => { setActiveTab('employees'); loadEmployees(); }}>Employees</button>
+      <button className={activeTab === 'branches' ? 'active' : ''} onClick={() => { setActiveTab('branches'); loadBranches(); }}>Branches</button>
       <span className="adminIdentity">{adminEmail}</span>
     </nav>
 
-    {activeTab === 'overview' ? <>
-      <section className="grid">
-        <article><strong>{summary.checkedInNow}</strong><span>Checked in now</span></article>
-        <article><strong>{summary.lateToday}</strong><span>Late today</span></article>
-        <article><strong>{summary.absent}</strong><span>Absent</span></article>
-        <article><strong>{summary.offlineDevices}</strong><span>Offline devices</span></article>
-      </section>
+    {activeTab === 'overview' && <>
+      <section className="grid"><article><strong>{summary.checkedInNow}</strong><span>Checked in now</span></article><article><strong>{summary.lateToday}</strong><span>Late today</span></article><article><strong>{summary.absent}</strong><span>Absent</span></article><article><strong>{summary.offlineDevices}</strong><span>Offline devices</span></article></section>
+      <section className="panel"><div className="panelHead"><h2>Live attendance</h2><span>Refreshes every 5 seconds</span></div>{events.length === 0 ? <p className="empty">No attendance events yet.</p> : <div className="attendanceList">{events.map(event => <div className="attendanceRow" key={event.id}><div><strong>{event.employeeName}</strong><span>{event.employeeNumber} · {event.branchName}</span></div><div className="eventMeta"><b className={event.status.toLowerCase()}>{event.status.replace('_', ' ')}</b><span>{event.action === 'CHECK_IN' ? 'Checked in' : 'Checked out'} · {new Date(event.occurredAt).toLocaleString()}</span></div></div>)}</div>}</section>
+    </>}
 
-      <section className="panel">
-        <div className="panelHead"><h2>Live attendance</h2><span>Refreshes every 5 seconds</span></div>
-        {events.length === 0 ? <p className="empty">No attendance events yet.</p> : <div className="attendanceList">{events.map(event => <div className="attendanceRow" key={event.id}>
-          <div><strong>{event.employeeName}</strong><span>{event.employeeNumber} · {event.branchName}</span></div>
-          <div className="eventMeta"><b className={event.status.toLowerCase()}>{event.status.replace('_', ' ')}</b><span>{event.action === 'CHECK_IN' ? 'Checked in' : 'Checked out'} · {new Date(event.occurredAt).toLocaleString()}</span></div>
-        </div>)}</div>}
-      </section>
-    </> : <>
-      <section className="panel employeeFormPanel">
-        <div className="panelHead"><div><h2>Add employee</h2><span>Create an employee number and private PIN.</span></div></div>
-        <form onSubmit={addEmployee} className="employeeForm">
-          <label>Employee number<input name="employeeNumber" placeholder="e.g. 1043" required /></label>
-          <label>First name<input name="firstName" required /></label>
-          <label>Last name<input name="lastName" required /></label>
-          <label>PIN<input name="pin" inputMode="numeric" type="password" pattern="[0-9]{4,12}" placeholder="4–12 digits" required /></label>
-          <label className="checkLabel"><input name="hourlyWorker" type="checkbox" /> Hourly worker</label>
-          <button className="primary" type="submit">Add employee</button>
-        </form>
-        {employeeMessage && <div className="infoBox">{employeeMessage}</div>}
-      </section>
+    {activeTab === 'employees' && <>
+      <section className="panel employeeFormPanel"><div className="panelHead"><div><h2>Add employee</h2><span>Create an employee number and private PIN.</span></div></div><form onSubmit={addEmployee} className="employeeForm"><label>Employee number<input name="employeeNumber" placeholder="e.g. 1043" required /></label><label>First name<input name="firstName" required /></label><label>Last name<input name="lastName" required /></label><label>PIN<input name="pin" inputMode="numeric" type="password" pattern="[0-9]{4,12}" placeholder="4–12 digits" required /></label><label className="checkLabel"><input name="hourlyWorker" type="checkbox" /> Hourly worker</label><button className="primary" type="submit">Add employee</button></form>{employeeMessage && <div className="infoBox">{employeeMessage}</div>}</section>
+      <section className="panel"><div className="panelHead"><div><h2>Employee directory</h2><span>{employees.filter(e => e.active).length} active · {employees.length} total</span></div></div><div className="directoryTools"><input value={employeeSearch} onChange={e => setEmployeeSearch(e.target.value)} placeholder="Search name or employee number" /><select value={employeeFilter} onChange={e => setEmployeeFilter(e.target.value as any)}><option value="all">All employees</option><option value="active">Active only</option><option value="inactive">Inactive only</option></select></div><div className="employeeList">{filteredEmployees.length === 0 ? <p className="empty">No employees match this search.</p> : filteredEmployees.map(employee => <div className="employeeRow" key={employee.id}><div><strong>{employee.firstName} {employee.lastName}</strong><span>#{employee.employeeNumber} · {employee.hourlyWorker ? 'Hourly' : 'Salaried'} · {employee.active ? 'Active' : 'Inactive'}</span></div><div className="rowActions"><button onClick={() => editEmployee(employee)}>Edit</button><button onClick={() => updateEmployee(employee, { hourlyWorker: !employee.hourlyWorker }, employee.hourlyWorker ? 'Changed to salaried worker.' : 'Changed to hourly worker.')}>{employee.hourlyWorker ? 'Make salaried' : 'Make hourly'}</button><button onClick={() => resetPin(employee)}>Reset PIN</button><button className={employee.active ? 'dangerAction' : ''} onClick={() => updateEmployee(employee, { active: !employee.active }, employee.active ? 'Employee deactivated.' : 'Employee activated.')}>{employee.active ? 'Deactivate' : 'Activate'}</button></div></div>)}</div></section>
+    </>}
 
-      <section className="panel">
-        <div className="panelHead"><div><h2>Employee directory</h2><span>{employees.filter(e => e.active).length} active · {employees.length} total</span></div></div>
-        <div className="directoryTools">
-          <input value={employeeSearch} onChange={e => setEmployeeSearch(e.target.value)} placeholder="Search name or employee number" />
-          <select value={employeeFilter} onChange={e => setEmployeeFilter(e.target.value as 'all' | 'active' | 'inactive')}>
-            <option value="all">All employees</option>
-            <option value="active">Active only</option>
-            <option value="inactive">Inactive only</option>
-          </select>
-        </div>
-        <div className="employeeList">{filteredEmployees.length === 0 ? <p className="empty">No employees match this search.</p> : filteredEmployees.map(employee => <div className="employeeRow" key={employee.id}>
-          <div><strong>{employee.firstName} {employee.lastName}</strong><span>#{employee.employeeNumber} · {employee.hourlyWorker ? 'Hourly' : 'Salaried'} · {employee.active ? 'Active' : 'Inactive'}</span></div>
-          <div className="rowActions">
-            <button onClick={() => editEmployee(employee)}>Edit</button>
-            <button onClick={() => updateEmployee(employee, { hourlyWorker: !employee.hourlyWorker }, employee.hourlyWorker ? 'Changed to salaried worker.' : 'Changed to hourly worker.')}>{employee.hourlyWorker ? 'Make salaried' : 'Make hourly'}</button>
-            <button onClick={() => resetPin(employee)}>Reset PIN</button>
-            <button className={employee.active ? 'dangerAction' : ''} onClick={() => updateEmployee(employee, { active: !employee.active }, employee.active ? 'Employee deactivated.' : 'Employee activated.')}>{employee.active ? 'Deactivate' : 'Activate'}</button>
-          </div>
-        </div>)}</div>
-      </section>
+    {activeTab === 'branches' && <>
+      <section className="panel branchFormPanel"><div className="panelHead"><div><h2>Add branch</h2><span>Create a workplace location and assign its timezone.</span></div></div><form onSubmit={addBranch} className="branchForm"><label>Branch name<input name="name" placeholder="e.g. Manchester City Centre" required /></label><label>Timezone<input name="timezone" placeholder="e.g. Europe/London" defaultValue="Europe/London" required /></label><label className="wideField">Address<input name="address" placeholder="Street, city, postcode" /></label><button className="primary" type="submit">Add branch</button></form>{branchMessage && <div className="infoBox">{branchMessage}</div>}</section>
+      <section className="panel"><div className="panelHead"><div><h2>Branch directory</h2><span>{branches.filter(b => b.active).length} active · {branches.length} total</span></div></div><div className="directoryTools"><input value={branchSearch} onChange={e => setBranchSearch(e.target.value)} placeholder="Search branch, address or timezone" /><select value={branchFilter} onChange={e => setBranchFilter(e.target.value as any)}><option value="all">All branches</option><option value="active">Active only</option><option value="inactive">Inactive only</option></select></div><div className="branchList">{filteredBranches.length === 0 ? <p className="empty">No branches match this search.</p> : filteredBranches.map(branch => <div className="branchRow" key={branch.id}><div className="branchSummary"><strong>{branch.name}</strong><span>{branch.address || 'No address added'}</span><small>{branch.timezone} · {branch.deviceCount ?? 0} active device{(branch.deviceCount ?? 0) === 1 ? '' : 's'} · {branch.active ? 'Active' : 'Inactive'}</small></div><div className="rowActions"><button onClick={() => editBranch(branch)}>Edit</button><button className={branch.active ? 'dangerAction' : ''} onClick={() => updateBranch(branch, { active: !branch.active }, branch.active ? 'Branch deactivated.' : 'Branch activated.')}>{branch.active ? 'Deactivate' : 'Activate'}</button></div></div>)}</div></section>
     </>}
   </main>;
 }
