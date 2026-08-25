@@ -1,4 +1,4 @@
-import React, { FormEvent, useEffect, useState } from 'react';
+import React, { FormEvent, useEffect, useMemo, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import './styles.css';
 
@@ -20,6 +20,8 @@ function App() {
   const [employees, setEmployees] = useState<Employee[]>([]);
   const [connected, setConnected] = useState(false);
   const [employeeMessage, setEmployeeMessage] = useState('');
+  const [employeeSearch, setEmployeeSearch] = useState('');
+  const [employeeFilter, setEmployeeFilter] = useState<'all' | 'active' | 'inactive'>('all');
 
   const makeHeaders = (extra?: HeadersInit) => {
     const headers = new Headers(extra);
@@ -124,11 +126,11 @@ function App() {
     }
   };
 
-  const updateEmployee = async (employee: Employee, changes: Record<string, unknown>) => {
+  const updateEmployee = async (employee: Employee, changes: Record<string, unknown>, successMessage = 'Employee updated successfully.') => {
     setEmployeeMessage('');
     try {
       await fetchJson(`${API_URL}/v1/admin/employees/${employee.id}`, { method: 'PATCH', body: JSON.stringify(changes) });
-      setEmployeeMessage('Employee updated successfully.');
+      setEmployeeMessage(successMessage);
       await loadEmployees();
     } catch (error: any) {
       setEmployeeMessage(error.message);
@@ -142,8 +144,29 @@ function App() {
       setEmployeeMessage('PIN must contain 4–12 digits.');
       return;
     }
-    await updateEmployee(employee, { pin });
+    await updateEmployee(employee, { pin }, 'PIN reset successfully.');
   };
+
+  const editEmployee = async (employee: Employee) => {
+    const firstName = window.prompt('First name', employee.firstName);
+    if (firstName === null) return;
+    const lastName = window.prompt('Last name', employee.lastName);
+    if (lastName === null) return;
+    if (!firstName.trim() || !lastName.trim()) {
+      setEmployeeMessage('First name and last name are required.');
+      return;
+    }
+    await updateEmployee(employee, { firstName: firstName.trim(), lastName: lastName.trim() }, 'Employee details updated.');
+  };
+
+  const filteredEmployees = useMemo(() => {
+    const q = employeeSearch.trim().toLowerCase();
+    return employees.filter(employee => {
+      const matchesStatus = employeeFilter === 'all' || (employeeFilter === 'active' ? employee.active : !employee.active);
+      const matchesSearch = !q || `${employee.firstName} ${employee.lastName} ${employee.employeeNumber}`.toLowerCase().includes(q);
+      return matchesStatus && matchesSearch;
+    });
+  }, [employees, employeeSearch, employeeFilter]);
 
   if (!token) return <main className="loginShell">
     <section className="loginCard">
@@ -201,10 +224,23 @@ function App() {
       </section>
 
       <section className="panel">
-        <div className="panelHead"><h2>Employee directory</h2><span>{employees.length} employees</span></div>
-        <div className="employeeList">{employees.map(employee => <div className="employeeRow" key={employee.id}>
+        <div className="panelHead"><div><h2>Employee directory</h2><span>{employees.filter(e => e.active).length} active · {employees.length} total</span></div></div>
+        <div className="directoryTools">
+          <input value={employeeSearch} onChange={e => setEmployeeSearch(e.target.value)} placeholder="Search name or employee number" />
+          <select value={employeeFilter} onChange={e => setEmployeeFilter(e.target.value as 'all' | 'active' | 'inactive')}>
+            <option value="all">All employees</option>
+            <option value="active">Active only</option>
+            <option value="inactive">Inactive only</option>
+          </select>
+        </div>
+        <div className="employeeList">{filteredEmployees.length === 0 ? <p className="empty">No employees match this search.</p> : filteredEmployees.map(employee => <div className="employeeRow" key={employee.id}>
           <div><strong>{employee.firstName} {employee.lastName}</strong><span>#{employee.employeeNumber} · {employee.hourlyWorker ? 'Hourly' : 'Salaried'} · {employee.active ? 'Active' : 'Inactive'}</span></div>
-          <div className="rowActions"><button onClick={() => resetPin(employee)}>Reset PIN</button><button onClick={() => updateEmployee(employee, { active: !employee.active })}>{employee.active ? 'Deactivate' : 'Activate'}</button></div>
+          <div className="rowActions">
+            <button onClick={() => editEmployee(employee)}>Edit</button>
+            <button onClick={() => updateEmployee(employee, { hourlyWorker: !employee.hourlyWorker }, employee.hourlyWorker ? 'Changed to salaried worker.' : 'Changed to hourly worker.')}>{employee.hourlyWorker ? 'Make salaried' : 'Make hourly'}</button>
+            <button onClick={() => resetPin(employee)}>Reset PIN</button>
+            <button className={employee.active ? 'dangerAction' : ''} onClick={() => updateEmployee(employee, { active: !employee.active }, employee.active ? 'Employee deactivated.' : 'Employee activated.')}>{employee.active ? 'Deactivate' : 'Activate'}</button>
+          </div>
         </div>)}</div>
       </section>
     </>}
