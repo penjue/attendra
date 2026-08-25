@@ -92,7 +92,7 @@ function App() {
   const loadShifts = async () => {
     if (!token) return;
     try { const data = await fetchJson(`${API_URL}/v1/admin/shifts`); setShifts(data.shifts); }
-    catch (error: any) { setShiftMessage(error.message); }
+    catch { setShiftMessage('Unable to refresh the shift schedule. Please try again.'); }
   };
 
   useEffect(() => {
@@ -176,6 +176,15 @@ function App() {
     await updateDevice(device, { name: name.trim() }, 'Tablet name updated.');
   };
 
+  const shiftErrorMessage = (message: string) => {
+    if (message === 'SHIFT_END_MUST_BE_AFTER_START') return 'Shift end time must be after the start time.';
+    if (message === 'SHIFT_OVERLAP') return 'This employee already has a shift that overlaps these times.';
+    if (message === 'INVALID_SHIFT' || message === 'Bad Request') return 'Please complete all shift details correctly and try again.';
+    if (message === 'EMPLOYEE_NOT_FOUND') return 'The selected employee is not available.';
+    if (message === 'BRANCH_NOT_FOUND') return 'The selected branch is not available.';
+    return message || 'Unable to schedule this shift.';
+  };
+
   const addShift = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     const formElement = event.currentTarget;
@@ -186,7 +195,7 @@ function App() {
       const endsAt = new Date(String(form.get('endsAt'))).toISOString();
       await fetchJson(`${API_URL}/v1/admin/shifts`, { method: 'POST', body: JSON.stringify({ employeeId: form.get('employeeId'), branchId: form.get('branchId'), startsAt, endsAt, breakMinutes: Number(form.get('breakMinutes') || 0) }) });
       formElement.reset(); setShiftMessage('Shift scheduled successfully.'); await loadShifts();
-    } catch (error: any) { setShiftMessage(error.message === 'SHIFT_END_MUST_BE_AFTER_START' ? 'Shift end time must be after the start time.' : error.message); }
+    } catch (error: any) { setShiftMessage(shiftErrorMessage(error.message)); }
   };
 
   const deleteShift = async (shift: Shift) => {
@@ -214,7 +223,7 @@ function App() {
   const filteredShifts = useMemo(() => {
     const q = shiftSearch.trim().toLowerCase(); const now = Date.now();
     return shifts.filter(shift => {
-      const start = new Date(shift.startsAt).getTime(), end = new Date(shift.endsAt).getTime();
+      const end = new Date(shift.endsAt).getTime();
       const period = shiftFilter === 'all' || (shiftFilter === 'upcoming' ? end >= now : end < now);
       return period && (!q || `${shift.employeeName} ${shift.employeeNumber} ${shift.branchName}`.toLowerCase().includes(q));
     });
