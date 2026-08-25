@@ -177,12 +177,15 @@ function App() {
   };
 
   const addShift = async (event: FormEvent<HTMLFormElement>) => {
-    event.preventDefault(); setShiftMessage(''); const form = new FormData(event.currentTarget);
+    event.preventDefault();
+    const formElement = event.currentTarget;
+    setShiftMessage('');
+    const form = new FormData(formElement);
     try {
       const startsAt = new Date(String(form.get('startsAt'))).toISOString();
       const endsAt = new Date(String(form.get('endsAt'))).toISOString();
       await fetchJson(`${API_URL}/v1/admin/shifts`, { method: 'POST', body: JSON.stringify({ employeeId: form.get('employeeId'), branchId: form.get('branchId'), startsAt, endsAt, breakMinutes: Number(form.get('breakMinutes') || 0) }) });
-      event.currentTarget.reset(); setShiftMessage('Shift scheduled successfully.'); await loadShifts();
+      formElement.reset(); setShiftMessage('Shift scheduled successfully.'); await loadShifts();
     } catch (error: any) { setShiftMessage(error.message === 'SHIFT_END_MUST_BE_AFTER_START' ? 'Shift end time must be after the start time.' : error.message); }
   };
 
