@@ -7,6 +7,16 @@ const validPeriod=(from:string,to:string)=>{const a=new Date(from).getTime(),b=n
 type RequireAdmin=(request:any,reply:any)=>{email:string;companyId:string;exp:number}|null;
 
 export const registerTimesheetRoutes=(app:any,requireAdmin:RequireAdmin)=>{
+  app.post('/v1/attendance/eligibility',async(request:any,reply:any)=>{
+    const p=z.object({companyId:z.uuid(),branchId:z.uuid(),employeeNumber:z.string().trim().min(1).max(64),pin:z.string().regex(/^\d{4,12}$/),occurredAt:z.iso.datetime(),action:z.enum(['CHECK_IN','CHECK_OUT'])}).safeParse(request.body);
+    if(!p.success)return reply.code(400).send({ok:false,error:'INVALID_REQUEST'});
+    const employee=await db.query(`select id from employees where company_id=$1 and employee_number=$2 and active=true and pin_hash=crypt($3,pin_hash) limit 1`,[p.data.companyId,p.data.employeeNumber,p.data.pin]);
+    if(!employee.rowCount)return reply.code(401).send({ok:false,error:'INVALID_EMPLOYEE_OR_PIN'});
+    const shift=await db.query(`select id,starts_at as "startsAt",ends_at as "endsAt" from shifts where company_id=$1 and branch_id=$2 and employee_id=$3 and $4::timestamptz between starts_at-interval '4 hours' and ends_at+interval '4 hours' order by abs(extract(epoch from(starts_at-$4::timestamptz))) limit 1`,[p.data.companyId,p.data.branchId,employee.rows[0].id,p.data.occurredAt]);
+    if(!shift.rowCount)return reply.code(409).send({ok:false,error:'NO_SCHEDULED_SHIFT'});
+    return{ok:true,shift:shift.rows[0]};
+  });
+
   app.get('/v1/admin/timesheets',async(request:any,reply:any)=>{
     const a=requireAdmin(request,reply);if(!a)return;
     const p=periodSchema.safeParse(request.query);if(!p.success||!validPeriod(p.success?p.data.from:'',p.success?p.data.to:''))return reply.code(400).send({ok:false,error:'INVALID_REPORT_PERIOD'});
@@ -42,7 +52,7 @@ export const registerTimesheetRoutes=(app:any,requireAdmin:RequireAdmin)=>{
       let open:any=null;
       for(const event of list){
         if(event.action==='CHECK_IN'){if(open){entries.push({entryId:`unscheduled:${open.id}`,shiftId:null,employeeId,employeeNumber:open.employeeNumber,employeeName:open.employeeName,branchId:open.branchId,branchName:open.branchName,date:new Date(open.occurredAt).toISOString().slice(0,10),scheduledStart:null,scheduledEnd:null,breakMinutes:0,checkInAt:open.occurredAt,checkOutAt:null,workedMinutes:0,scheduledMinutes:0,overtimeMinutes:0,lateMinutes:0,earlyLeaveMinutes:0,status:'OPEN',needsReview:true})}open=event}
-        else if(open){const start=new Date(open.occurredAt).getTime(),end=new Date(event.occurredAt).getTime();const worked=Math.max(0,Math.round((end-start)/60000));entries.push({entryId:`unscheduled:${open.id}`,shiftId:null,employeeId,employeeNumber:open.employeeNumber,employeeName:open.employeeName,branchId:open.branchId,branchName:open.branchName,date:new Date(open.occurredAt).toISOString().slice(0,10),scheduledStart:null,scheduledEnd:null,breakMinutes:0,checkInAt:open.occurredAt,checkOutAt:event.occurredAt,workedMinutes:worked,scheduledMinutes:0,overtimeMinutes:worked,lateMinutes:0,earlyLeaveMinutes:0,status:'UNSCHEDULED',needsReview:false});open=null}
+        else if(open){const start=new Date(open.occurredAt).getTime(),end=new Date(event.occurredAt).getTime();const worked=Math.max(0,Math.round((end-start)/60000));entries.push({entryId:`unscheduled:${open.id}`,shiftId:null,employeeId,employeeNumber:open.employeeNumber,employeeName:open.employeeName,branchId:open.branchId,branchName:open.branchName,date:new Date(open.occurredAt).toISOString().slice(0,10),scheduledStart:null,scheduledEnd:null,breakMinutes:0,checkInAt:open.occurredAt,checkOutAt:event.occurredAt,workedMinutes:worked,scheduledMinutes:0,overtimeMinutes:worked,lateMinutes:0,earlyLeaveMinutes:0,status:'UNSCHEDULED',needsReview:true});open=null}
       }
       if(open){entries.push({entryId:`unscheduled:${open.id}`,shiftId:null,employeeId,employeeNumber:open.employeeNumber,employeeName:open.employeeName,branchId:open.branchId,branchName:open.branchName,date:new Date(open.occurredAt).toISOString().slice(0,10),scheduledStart:null,scheduledEnd:null,breakMinutes:0,checkInAt:open.occurredAt,checkOutAt:null,workedMinutes:Math.max(0,Math.round((Math.min(now,toMs)-new Date(open.occurredAt).getTime())/60000)),scheduledMinutes:0,overtimeMinutes:0,lateMinutes:0,earlyLeaveMinutes:0,status:'OPEN',needsReview:true})}
     }
@@ -66,6 +76,19 @@ export const registerTimesheetRoutes=(app:any,requireAdmin:RequireAdmin)=>{
     const correctionBranchId=p.data.branchId||priorEvent.branch_id;
     const correctionShiftId=p.data.shiftId??priorEvent.shift_id??null;
     const c=await db.connect();try{await c.query('BEGIN');const r=await c.query(`insert into attendance_events(company_id,branch_id,device_id,employee_id,shift_id,action,status,occurred_at,source) values($1,$2,$3,$4,$5,'CHECK_OUT','ON_TIME',$6,'ADMIN') returning id,occurred_at as "occurredAt"`,[a.companyId,correctionBranchId,correctionDeviceId,p.data.employeeId,correctionShiftId,at.toISOString()]);await c.query(`insert into audit_log(company_id,actor_type,actor_id,action,entity_type,entity_id,metadata) values($1,'ADMIN',$2,'ADD_CHECK_OUT','ATTENDANCE_EVENT',$3,jsonb_build_object('employeeId',$4::uuid,'shiftId',$5::text,'reason',$6,'originalDeviceId',$7::text))`,[a.companyId,a.email,r.rows[0].id,p.data.employeeId,correctionShiftId,p.data.reason,correctionDeviceId]);await c.query('COMMIT');return reply.code(201).send({ok:true,event:r.rows[0]})}catch(error){await c.query('ROLLBACK');app.log.error(error);return reply.code(500).send({ok:false,error:'CORRECTION_FAILED'})}finally{c.release()}
+  });
+
+  app.delete('/v1/admin/timekeeping/unscheduled/:eventId',async(request:any,reply:any)=>{
+    const a=requireAdmin(request,reply);if(!a)return;
+    const p=z.object({eventId:z.uuid()}).safeParse(request.params);if(!p.success)return reply.code(400).send({ok:false,error:'INVALID_EVENT_ID'});
+    const target=await db.query(`select id,employee_id,action,occurred_at from attendance_events where id=$1 and company_id=$2 and shift_id is null`,[p.data.eventId,a.companyId]);
+    if(!target.rowCount)return reply.code(404).send({ok:false,error:'UNSCHEDULED_EVENT_NOT_FOUND'});
+    const event=target.rows[0];const ids=[event.id];
+    if(event.action==='CHECK_IN'){
+      const pair=await db.query(`select id from attendance_events where company_id=$1 and employee_id=$2 and shift_id is null and action='CHECK_OUT' and occurred_at>$3::timestamptz and occurred_at<coalesce((select min(occurred_at) from attendance_events where company_id=$1 and employee_id=$2 and shift_id is null and action='CHECK_IN' and occurred_at>$3::timestamptz),'infinity'::timestamptz) order by occurred_at limit 1`,[a.companyId,event.employee_id,event.occurred_at]);
+      if(pair.rowCount)ids.push(pair.rows[0].id);
+    }
+    const c=await db.connect();try{await c.query('BEGIN');await c.query(`delete from attendance_events where company_id=$1 and id=any($2::uuid[]) and shift_id is null`,[a.companyId,ids]);await c.query(`insert into audit_log(company_id,actor_type,actor_id,action,entity_type,entity_id,metadata) values($1,'ADMIN',$2,'REMOVE_UNSCHEDULED_ATTENDANCE','ATTENDANCE_EVENT',$3,jsonb_build_object('removedEventIds',$4::text[],'employeeId',$5::uuid))`,[a.companyId,a.email,event.id,ids,event.employee_id]);await c.query('COMMIT');return{ok:true,removed:ids.length}}catch(error){await c.query('ROLLBACK');app.log.error(error);return reply.code(500).send({ok:false,error:'UNSCHEDULED_REMOVE_FAILED'})}finally{c.release()}
   });
 
   app.get('/v1/admin/pay-period-approval',async(request:any,reply:any)=>{
