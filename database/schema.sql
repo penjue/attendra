@@ -107,6 +107,21 @@ CREATE TABLE IF NOT EXISTS audit_log (
   created_at timestamptz NOT NULL DEFAULT now()
 );
 
+CREATE OR REPLACE FUNCTION prevent_unscheduled_tablet_attendance()
+RETURNS trigger AS $$
+BEGIN
+  IF NEW.source = 'TABLET' AND NEW.shift_id IS NULL THEN
+    RAISE EXCEPTION 'NO_SCHEDULED_SHIFT' USING ERRCODE = 'P0001';
+  END IF;
+  RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+DROP TRIGGER IF EXISTS trg_prevent_unscheduled_tablet_attendance ON attendance_events;
+CREATE TRIGGER trg_prevent_unscheduled_tablet_attendance
+BEFORE INSERT ON attendance_events
+FOR EACH ROW EXECUTE FUNCTION prevent_unscheduled_tablet_attendance();
+
 CREATE INDEX IF NOT EXISTS idx_attendance_company_time ON attendance_events(company_id, occurred_at DESC);
 CREATE INDEX IF NOT EXISTS idx_attendance_employee_time ON attendance_events(employee_id, occurred_at DESC);
 CREATE INDEX IF NOT EXISTS idx_shifts_employee_start ON shifts(employee_id, starts_at);
