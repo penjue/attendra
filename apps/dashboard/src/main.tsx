@@ -11,12 +11,15 @@ type Shift = { id: string; employeeId: string; employeeName: string; employeeNum
 type Tab = 'overview' | 'employees' | 'branches' | 'devices' | 'shifts' | 'timekeeping';
 type TimeRow = { employeeId: string; employeeNumber: string; employeeName: string; workedMinutes: number; scheduledMinutes: number; overtimeMinutes: number; lateEvents: number; earlyEvents: number; missedShifts: number; openSession: boolean };
 type TimeTotals = { workedMinutes: number; scheduledMinutes: number; overtimeMinutes: number; lateEvents: number; earlyEvents: number; missedShifts: number; openSessions: number };
+type TimesheetEntry = { entryId: string; shiftId: string | null; employeeId: string; employeeNumber: string; employeeName: string; branchId: string; branchName: string; date: string; scheduledStart: string | null; scheduledEnd: string | null; breakMinutes: number; checkInAt: string | null; checkOutAt: string | null; workedMinutes: number; scheduledMinutes: number; overtimeMinutes: number; lateMinutes: number; earlyLeaveMinutes: number; status: 'COMPLETE' | 'OPEN' | 'MISSED' | 'UPCOMING' | 'UNSCHEDULED'; needsReview: boolean };
+type PayPeriodApproval = { from: string; to: string; includeOvertime: boolean; approvedBy: string; approvedAt: string };
 
 const env = (import.meta as any).env as Record<string, string | undefined>;
 const API_URL = env.VITE_API_URL ?? 'http://localhost:4000';
 const COMPANY_ID = env.VITE_COMPANY_ID ?? '';
 const minutesLabel = (minutes: number) => `${Math.floor(minutes / 60)}h ${String(minutes % 60).padStart(2, '0')}m`;
 const localDateValue = (date: Date) => { const y=date.getFullYear(),m=String(date.getMonth()+1).padStart(2,'0'),d=String(date.getDate()).padStart(2,'0'); return `${y}-${m}-${d}`; };
+const localDateTimeValue = (date: Date) => { const y=date.getFullYear(),m=String(date.getMonth()+1).padStart(2,'0'),d=String(date.getDate()).padStart(2,'0'),h=String(date.getHours()).padStart(2,'0'),min=String(date.getMinutes()).padStart(2,'0'); return `${y}-${m}-${d}T${h}:${min}`; };
 const initialFrom = () => { const d=new Date(); d.setDate(d.getDate()-6); return localDateValue(d); };
 const initialTo = () => localDateValue(new Date());
 
@@ -49,6 +52,9 @@ function App() {
   const [timeTo, setTimeTo] = useState(initialTo);
   const [timeRows, setTimeRows] = useState<TimeRow[]>([]);
   const [timeTotals, setTimeTotals] = useState<TimeTotals>({ workedMinutes: 0, scheduledMinutes: 0, overtimeMinutes: 0, lateEvents: 0, earlyEvents: 0, missedShifts: 0, openSessions: 0 });
+  const [timesheetEntries, setTimesheetEntries] = useState<TimesheetEntry[]>([]);
+  const [approval, setApproval] = useState<PayPeriodApproval | null>(null);
+  const [selectedTimeEmployee, setSelectedTimeEmployee] = useState('');
   const [timeMessage, setTimeMessage] = useState('');
   const [includeOvertime, setIncludeOvertime] = useState(() => localStorage.getItem('attendra_include_overtime') !== 'false');
 
@@ -73,6 +79,13 @@ function App() {
     return data;
   };
 
+  const reportBounds = () => {
+    const from = new Date(`${timeFrom}T00:00:00`);
+    const to = new Date(`${timeTo}T00:00:00`); to.setDate(to.getDate()+1);
+    if (Number.isNaN(from.getTime()) || Number.isNaN(to.getTime()) || to.getTime() <= from.getTime()) throw new Error('INVALID_REPORT_PERIOD');
+    return { from: from.toISOString(), to: to.toISOString() };
+  };
+
   const loadOverview = async () => {
     if (!token || !COMPANY_ID) return;
     try {
@@ -91,12 +104,15 @@ function App() {
     if (!token) return;
     setTimeMessage('');
     try {
-      const from = new Date(`${timeFrom}T00:00:00`);
-      const to = new Date(`${timeTo}T00:00:00`);
-      to.setDate(to.getDate()+1);
-      if (Number.isNaN(from.getTime()) || Number.isNaN(to.getTime()) || to.getTime() <= from.getTime()) return setTimeMessage('Choose a valid report period.');
-      const data = await fetchJson(`${API_URL}/v1/admin/timekeeping?from=${encodeURIComponent(from.toISOString())}&to=${encodeURIComponent(to.toISOString())}`);
-      setTimeRows(data.rows); setTimeTotals(data.totals);
+      const bounds=reportBounds();
+      const q=`from=${encodeURIComponent(bounds.from)}&to=${encodeURIComponent(bounds.to)}`;
+      const [reportData,timesheetData,approvalData]=await Promise.all([
+        fetchJson(`${API_URL}/v1/admin/timekeeping?${q}`),
+        fetchJson(`${API_URL}/v1/admin/timesheets?${q}`),
+        fetchJson(`${API_URL}/v1/admin/pay-period-approval?${q}`)
+      ]);
+      setTimeRows(reportData.rows); setTimeTotals(reportData.totals); setTimesheetEntries(timesheetData.entries); setApproval(approvalData.approval);
+      if (!selectedTimeEmployee && reportData.rows[0]) setSelectedTimeEmployee(reportData.rows[0].employeeId);
     } catch (error: any) { setTimeMessage(error.message === 'INVALID_REPORT_PERIOD' ? 'Choose a valid report period of up to one year.' : 'Unable to load the timekeeping report. Please try again.'); }
   };
 
@@ -145,11 +161,27 @@ function App() {
   const addShift = async (event: FormEvent<HTMLFormElement>) => { event.preventDefault(); const formElement = event.currentTarget; setShiftMessage(''); const form = new FormData(formElement); try { const startsAt = new Date(String(form.get('startsAt'))).toISOString(); const endsAt = new Date(String(form.get('endsAt'))).toISOString(); await fetchJson(`${API_URL}/v1/admin/shifts`, { method: 'POST', body: JSON.stringify({ employeeId: form.get('employeeId'), branchId: form.get('branchId'), startsAt, endsAt, breakMinutes: Number(form.get('breakMinutes') || 0) }) }); formElement.reset(); setShiftMessage('Shift scheduled successfully.'); await loadShifts(); } catch (error: any) { setShiftMessage(shiftErrorMessage(error.message)); } };
   const deleteShift = async (shift: Shift) => { if (!window.confirm(`Delete ${shift.employeeName}'s shift at ${shift.branchName}?`)) return; setShiftMessage(''); try { await fetchJson(`${API_URL}/v1/admin/shifts/${shift.id}`, { method: 'DELETE', body: '{}' }); setShiftMessage('Shift deleted.'); await loadShifts(); } catch (error: any) { setShiftMessage(error.message === 'SHIFT_HAS_ATTENDANCE' ? 'This shift already has attendance records and cannot be deleted.' : error.message === 'Bad Request' ? 'Unable to delete this shift. Please refresh and try again.' : error.message); } };
 
+  const fixMissingCheckout = async (entry: TimesheetEntry) => {
+    const suggested=entry.scheduledEnd?localDateTimeValue(new Date(entry.scheduledEnd)):localDateTimeValue(new Date());
+    const value=window.prompt(`Enter the correct checkout time for ${entry.employeeName} (YYYY-MM-DDTHH:MM)`,suggested);if(value===null)return;
+    const at=new Date(value);if(Number.isNaN(at.getTime()))return setTimeMessage('Enter a valid checkout date and time.');
+    const reason=window.prompt('Reason for this manager correction','Missing checkout corrected by manager');if(reason===null)return;if(reason.trim().length<3)return setTimeMessage('Please enter a short reason for the correction.');
+    try{await fetchJson(`${API_URL}/v1/admin/timekeeping/corrections`,{method:'POST',body:JSON.stringify({employeeId:entry.employeeId,branchId:entry.branchId,shiftId:entry.shiftId,occurredAt:at.toISOString(),reason:reason.trim()})});setTimeMessage('Missing checkout corrected and recorded in the audit log.');await loadTimeReport();await loadOverview()}catch(error:any){setTimeMessage(error.message==='NO_OPEN_SESSION'?'There is no open check-in to correct for this employee.':error.message==='INVALID_CORRECTION'?'The correction details are invalid.': 'Unable to save this correction. Please try again.')}
+  };
+
+  const approvePayPeriod = async () => {
+    if (!window.confirm(`Approve the pay period ${timeFrom} to ${timeTo}${includeOvertime?' with overtime included':' with overtime excluded'}?`)) return;
+    setTimeMessage('');
+    try{const bounds=reportBounds();const data=await fetchJson(`${API_URL}/v1/admin/pay-period-approval`,{method:'POST',body:JSON.stringify({...bounds,includeOvertime})});setApproval(data.approval);setTimeMessage('Pay period approved successfully.')}catch(error:any){setTimeMessage(error.message==='UNRESOLVED_OPEN_SESSION'?'Resolve all missing check-outs before approving this pay period.':error.message==='INVALID_REPORT_PERIOD'?'Choose a valid pay period first.':'Unable to approve this pay period.')}
+  };
+
   const filteredEmployees = useMemo(() => { const q = employeeSearch.trim().toLowerCase(); return employees.filter(employee => (employeeFilter === 'all' || (employeeFilter === 'active' ? employee.active : !employee.active)) && (!q || `${employee.firstName} ${employee.lastName} ${employee.employeeNumber}`.toLowerCase().includes(q))); }, [employees, employeeSearch, employeeFilter]);
   const filteredBranches = useMemo(() => { const q = branchSearch.trim().toLowerCase(); return branches.filter(branch => (branchFilter === 'all' || (branchFilter === 'active' ? branch.active : !branch.active)) && (!q || `${branch.name} ${branch.address ?? ''} ${branch.timezone}`.toLowerCase().includes(q))); }, [branches, branchSearch, branchFilter]);
   const filteredDevices = useMemo(() => { const q = deviceSearch.trim().toLowerCase(); return devices.filter(device => (deviceFilter === 'all' || (deviceFilter === 'active' ? device.active : !device.active)) && (!q || `${device.name} ${device.branchName}`.toLowerCase().includes(q))); }, [devices, deviceSearch, deviceFilter]);
   const filteredShifts = useMemo(() => { const q = shiftSearch.trim().toLowerCase(); const now = Date.now(); return shifts.filter(shift => { const end = new Date(shift.endsAt).getTime(); const period = shiftFilter === 'all' || (shiftFilter === 'upcoming' ? end >= now : end < now); return period && (!q || `${shift.employeeName} ${shift.employeeNumber} ${shift.branchName}`.toLowerCase().includes(q)); }); }, [shifts, shiftSearch, shiftFilter]);
   const filteredTimeRows = useMemo(() => { const q = timeSearch.trim().toLowerCase(); return timeRows.filter(row => !q || `${row.employeeName} ${row.employeeNumber}`.toLowerCase().includes(q)); }, [timeRows, timeSearch]);
+  const selectedEntries = useMemo(() => timesheetEntries.filter(entry => entry.employeeId===selectedTimeEmployee), [timesheetEntries,selectedTimeEmployee]);
+  const selectedEmployeeRow = timeRows.find(row=>row.employeeId===selectedTimeEmployee);
 
   if (!token) return <main className="loginShell"><section className="loginCard"><span className="eyebrow">ATTENDRA HQ</span><h1>Manager sign in</h1><p>Secure access to workforce attendance and employee management.</p><form onSubmit={login} className="loginForm"><label>Email<input name="email" type="email" autoComplete="username" required /></label><label>Password<input name="password" type="password" autoComplete="current-password" minLength={8} required /></label>{loginError && <div className="errorBox">{loginError}</div>}<button type="submit" className="primary">Sign in</button></form></section></main>;
 
@@ -173,12 +205,14 @@ function App() {
       <section className="panel">
         <div className="panelHead"><div><h2>Timekeeping</h2><span>Pay-period report from attendance records and scheduled shifts</span></div><div className="rowActions"><button className={includeOvertime ? 'overtimeToggle overtimeOn' : 'overtimeToggle overtimeOff'} onClick={toggleOvertime}>{includeOvertime ? 'Overtime: Included' : 'Overtime: Excluded'}</button></div></div>
         <div className="reportTools"><label>From<input type="date" value={timeFrom} max={timeTo} onChange={e=>setTimeFrom(e.target.value)} /></label><label>To<input type="date" value={timeTo} min={timeFrom} onChange={e=>setTimeTo(e.target.value)} /></label><button className="primary" onClick={loadTimeReport}>Apply period</button></div>
-        <div className="infoBox">{includeOvertime ? <>Overtime is currently <strong>included</strong>. Recorded working hours are not affected. Turn overtime off to exclude overtime hours from timekeeping and future payroll calculations.</> : <>Overtime is currently <strong>excluded</strong>. Recorded working hours are not affected. Turn overtime on to include overtime hours in timekeeping and future payroll calculations.</>}</div>
-        {timeMessage && <div className="errorBox">{timeMessage}</div>}
+        <div className="infoBox">{includeOvertime ? <>Overtime is currently <strong>included</strong>. Recorded working hours are not affected. Turn overtime off to exclude overtime hours from timekeeping and payroll calculations.</> : <>Overtime is currently <strong>excluded</strong>. Recorded working hours are not affected. Turn overtime on to include overtime hours in timekeeping and payroll calculations.</>}</div>
+        <div className={`approvalBox ${approval?'approved':''}`}><div><strong>{approval?'Pay period approved':'Pay period not approved'}</strong><span>{approval?`Approved by ${approval.approvedBy} on ${new Date(approval.approvedAt).toLocaleString()} · Overtime ${approval.includeOvertime?'included':'excluded'}`:'Review employee timesheets and resolve missing check-outs before approval.'}</span></div>{!approval&&<button className="primary" onClick={approvePayPeriod}>Approve pay period</button>}</div>
+        {timeMessage && <div className={timeMessage.toLowerCase().includes('success')||timeMessage.toLowerCase().includes('corrected')?'infoBox':'errorBox'}>{timeMessage}</div>}
         <div className="directoryTools"><input value={timeSearch} onChange={e => setTimeSearch(e.target.value)} placeholder="Search employee" /></div>
-        <div className="branchList">{filteredTimeRows.length === 0 ? <p className="empty">No timekeeping data for this period.</p> : filteredTimeRows.map(row => <div className="branchRow" key={row.employeeId}><div className="branchSummary"><strong>{row.employeeName}</strong><span>#{row.employeeNumber}</span><small>Worked {minutesLabel(row.workedMinutes)} · Scheduled {minutesLabel(row.scheduledMinutes)} · {includeOvertime ? `Overtime ${minutesLabel(row.overtimeMinutes)}` : 'Overtime excluded'}</small><small>{row.lateEvents} late check-in{row.lateEvents === 1 ? '' : 's'} · {row.earlyEvents} early check-in{row.earlyEvents === 1 ? '' : 's'} · {row.missedShifts} missed shift{row.missedShifts === 1 ? '' : 's'}{row.openSession ? ' · Missing check-out / currently clocked in' : ''}</small></div></div>)}</div>
-        <p className="formHint">Report period: {timeFrom} to {timeTo}. Use this view for weekly, fortnightly or monthly payroll preparation.</p>
+        <div className="branchList">{filteredTimeRows.length === 0 ? <p className="empty">No timekeeping data for this period.</p> : filteredTimeRows.map(row => <div className="branchRow" key={row.employeeId}><div className="branchSummary"><strong>{row.employeeName}</strong><span>#{row.employeeNumber}</span><small>Worked {minutesLabel(row.workedMinutes)} · Scheduled {minutesLabel(row.scheduledMinutes)} · {includeOvertime ? `Overtime ${minutesLabel(row.overtimeMinutes)}` : 'Overtime excluded'}</small><small>{row.lateEvents} late check-in{row.lateEvents === 1 ? '' : 's'} · {row.earlyEvents} early check-in{row.earlyEvents === 1 ? '' : 's'} · {row.missedShifts} missed shift{row.missedShifts === 1 ? '' : 's'}{row.openSession ? ' · Missing check-out / currently clocked in' : ''}</small></div><div className="rowActions"><button onClick={()=>setSelectedTimeEmployee(row.employeeId)}>Review timesheet</button></div></div>)}</div>
+        <p className="formHint">Report period: {timeFrom} to {timeTo}. Approval records the manager, timestamp and overtime policy in the audit trail.</p>
       </section>
+      {selectedTimeEmployee&&<section className="panel timesheetPanel"><div className="panelHead"><div><h2>Daily timesheet</h2><span>{selectedEmployeeRow?`${selectedEmployeeRow.employeeName} · #${selectedEmployeeRow.employeeNumber}`:'Employee detail'}</span></div><div className="rowActions"><button onClick={()=>setSelectedTimeEmployee('')}>Close</button></div></div>{selectedEntries.length===0?<p className="empty">No daily entries for this employee in the selected period.</p>:<div className="timesheetList">{selectedEntries.map(entry=><article className={`timesheetEntry ${entry.needsReview?'needsReview':''}`} key={entry.entryId}><div className="timesheetTop"><div><strong>{new Date(`${entry.date}T12:00:00`).toLocaleDateString()} · {entry.branchName}</strong><span className={`statusChip status-${entry.status.toLowerCase()}`}>{entry.status.replace('_',' ')}</span></div>{entry.needsReview&&<b>Review required</b>}</div><div className="timesheetMetrics"><span><small>Scheduled</small>{entry.scheduledStart&&entry.scheduledEnd?`${new Date(entry.scheduledStart).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'})}–${new Date(entry.scheduledEnd).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'})}`:'Unscheduled'}</span><span><small>Check in</small>{entry.checkInAt?new Date(entry.checkInAt).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'}):'—'}</span><span><small>Check out</small>{entry.checkOutAt?new Date(entry.checkOutAt).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'}):'—'}</span><span><small>Worked</small>{minutesLabel(entry.workedMinutes)}</span></div><p className="timesheetNote">Scheduled {minutesLabel(entry.scheduledMinutes)} · Break {entry.breakMinutes}m · Late {entry.lateMinutes}m · Early leave {entry.earlyLeaveMinutes}m · Overtime {includeOvertime?minutesLabel(entry.overtimeMinutes):'excluded'}</p>{entry.status==='OPEN'&&<div className="rowActions"><button className="correctionAction" onClick={()=>fixMissingCheckout(entry)}>Fix missing checkout</button></div>}</article>)}</div>}</section>}
     </>}
   </main>;
 }
