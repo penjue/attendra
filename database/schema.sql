@@ -71,7 +71,7 @@ CREATE TABLE IF NOT EXISTS attendance_events (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   company_id uuid NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
   branch_id uuid NOT NULL REFERENCES branches(id),
-  device_id uuid NOT NULL REFERENCES devices(id),
+  device_id uuid REFERENCES devices(id),
   employee_id uuid NOT NULL REFERENCES employees(id),
   shift_id uuid REFERENCES shifts(id),
   action attendance_action NOT NULL,
@@ -79,6 +79,20 @@ CREATE TABLE IF NOT EXISTS attendance_events (
   occurred_at timestamptz NOT NULL,
   received_at timestamptz NOT NULL DEFAULT now(),
   source text NOT NULL DEFAULT 'TABLET'
+);
+
+ALTER TABLE attendance_events ALTER COLUMN device_id DROP NOT NULL;
+
+CREATE TABLE IF NOT EXISTS pay_period_approvals (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  company_id uuid NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+  period_from timestamptz NOT NULL,
+  period_to timestamptz NOT NULL,
+  include_overtime boolean NOT NULL DEFAULT true,
+  approved_by text NOT NULL,
+  approved_at timestamptz NOT NULL DEFAULT now(),
+  CHECK (period_to > period_from),
+  UNIQUE(company_id, period_from, period_to)
 );
 
 CREATE TABLE IF NOT EXISTS audit_log (
@@ -96,3 +110,4 @@ CREATE TABLE IF NOT EXISTS audit_log (
 CREATE INDEX IF NOT EXISTS idx_attendance_company_time ON attendance_events(company_id, occurred_at DESC);
 CREATE INDEX IF NOT EXISTS idx_attendance_employee_time ON attendance_events(employee_id, occurred_at DESC);
 CREATE INDEX IF NOT EXISTS idx_shifts_employee_start ON shifts(employee_id, starts_at);
+CREATE INDEX IF NOT EXISTS idx_pay_period_approvals_company_period ON pay_period_approvals(company_id, period_from, period_to);
