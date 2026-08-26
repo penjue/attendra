@@ -1,0 +1,76 @@
+import { z } from 'zod';
+import { db } from './db.js';
+
+const periodSchema=z.object({from:z.iso.datetime(),to:z.iso.datetime()});
+const validPeriod=(from:string,to:string)=>{const a=new Date(from).getTime(),b=new Date(to).getTime();return b>a&&b-a<=1000*60*60*24*366};
+
+type RequireAdmin=(request:any,reply:any)=>{email:string;companyId:string;exp:number}|null;
+
+export const registerTimesheetRoutes=(app:any,requireAdmin:RequireAdmin)=>{
+  app.get('/v1/admin/timesheets',async(request:any,reply:any)=>{
+    const a=requireAdmin(request,reply);if(!a)return;
+    const p=periodSchema.safeParse(request.query);if(!p.success||!validPeriod(p.success?p.data.from:'',p.success?p.data.to:''))return reply.code(400).send({ok:false,error:'INVALID_REPORT_PERIOD'});
+    const fromMs=new Date(p.data.from).getTime(),toMs=new Date(p.data.to).getTime(),now=Date.now();
+    const lookback=new Date(fromMs-24*60*60*1000).toISOString();
+    const lookahead=new Date(toMs+24*60*60*1000).toISOString();
+    const [shiftsResult,eventsResult]=await Promise.all([
+      db.query(`select s.id,s.employee_id as "employeeId",e.employee_number as "employeeNumber",concat(e.first_name,' ',e.last_name) as "employeeName",s.branch_id as "branchId",b.name as "branchName",s.starts_at as "startsAt",s.ends_at as "endsAt",s.break_minutes as "breakMinutes" from shifts s join employees e on e.id=s.employee_id join branches b on b.id=s.branch_id where s.company_id=$1 and s.starts_at<$3::timestamptz and s.ends_at>$2::timestamptz order by e.first_name,e.last_name,s.starts_at`,[a.companyId,p.data.from,p.data.to]),
+      db.query(`select ae.id,ae.employee_id as "employeeId",e.employee_number as "employeeNumber",concat(e.first_name,' ',e.last_name) as "employeeName",ae.branch_id as "branchId",b.name as "branchName",ae.shift_id as "shiftId",ae.action,ae.status,ae.occurred_at as "occurredAt",ae.source from attendance_events ae join employees e on e.id=ae.employee_id join branches b on b.id=ae.branch_id where ae.company_id=$1 and ae.occurred_at>=$2::timestamptz and ae.occurred_at<$3::timestamptz order by ae.employee_id,ae.occurred_at`,[a.companyId,lookback,lookahead])
+    ]);
+    const byShift=new Map<string,any[]>();
+    const unscheduledByEmployee=new Map<string,any[]>();
+    for(const event of eventsResult.rows){
+      if(event.shiftId){const list=byShift.get(event.shiftId)??[];list.push(event);byShift.set(event.shiftId,list)}
+      else if(new Date(event.occurredAt).getTime()>=fromMs&&new Date(event.occurredAt).getTime()<toMs){const list=unscheduledByEmployee.get(event.employeeId)??[];list.push(event);unscheduledByEmployee.set(event.employeeId,list)}
+    }
+    const entries:any[]=[];
+    for(const shift of shiftsResult.rows){
+      const startMs=new Date(shift.startsAt).getTime(),endMs=new Date(shift.endsAt).getTime();
+      const events=(byShift.get(shift.id)??[]).filter(e=>{const t=new Date(e.occurredAt).getTime();return t>=startMs-4*60*60*1000&&t<=endMs+4*60*60*1000});
+      const checkIn=events.find(e=>e.action==='CHECK_IN')??null;
+      const checkInMs=checkIn?new Date(checkIn.occurredAt).getTime():null;
+      const checkOut=checkIn?events.find(e=>e.action==='CHECK_OUT'&&new Date(e.occurredAt).getTime()>=checkInMs!):null;
+      const checkOutMs=checkOut?new Date(checkOut.occurredAt).getTime():null;
+      const scheduledMinutes=Math.max(0,Math.round((endMs-startMs)/60000)-Number(shift.breakMinutes??0));
+      const grossEnd=checkOutMs??(checkInMs!==null?Math.min(now,toMs):null);
+      const grossMinutes=checkInMs!==null&&grossEnd!==null&&grossEnd>checkInMs?Math.round((grossEnd-checkInMs)/60000):0;
+      const workedMinutes=Math.max(0,grossMinutes-(grossMinutes>0?Number(shift.breakMinutes??0):0));
+      const status=!checkIn?(endMs<=Math.min(now,toMs)?'MISSED':'UPCOMING'):!checkOut?'OPEN':'COMPLETE';
+      entries.push({entryId:`shift:${shift.id}`,shiftId:shift.id,employeeId:shift.employeeId,employeeNumber:shift.employeeNumber,employeeName:shift.employeeName,branchId:shift.branchId,branchName:shift.branchName,date:new Date(shift.startsAt).toISOString().slice(0,10),scheduledStart:shift.startsAt,scheduledEnd:shift.endsAt,breakMinutes:Number(shift.breakMinutes??0),checkInAt:checkIn?.occurredAt??null,checkOutAt:checkOut?.occurredAt??null,workedMinutes,scheduledMinutes,overtimeMinutes:Math.max(0,workedMinutes-scheduledMinutes),lateMinutes:checkInMs===null?0:Math.max(0,Math.round((checkInMs-startMs-5*60000)/60000)),earlyLeaveMinutes:checkOutMs===null?0:Math.max(0,Math.round((endMs-checkOutMs)/60000)),status,needsReview:status==='OPEN'||status==='MISSED'});
+    }
+    for(const [employeeId,list] of unscheduledByEmployee){
+      let open:any=null;
+      for(const event of list){
+        if(event.action==='CHECK_IN'){if(open){entries.push({entryId:`unscheduled:${open.id}`,shiftId:null,employeeId,employeeNumber:open.employeeNumber,employeeName:open.employeeName,branchId:open.branchId,branchName:open.branchName,date:new Date(open.occurredAt).toISOString().slice(0,10),scheduledStart:null,scheduledEnd:null,breakMinutes:0,checkInAt:open.occurredAt,checkOutAt:null,workedMinutes:0,scheduledMinutes:0,overtimeMinutes:0,lateMinutes:0,earlyLeaveMinutes:0,status:'OPEN',needsReview:true})}open=event}
+        else if(open){const start=new Date(open.occurredAt).getTime(),end=new Date(event.occurredAt).getTime();const worked=Math.max(0,Math.round((end-start)/60000));entries.push({entryId:`unscheduled:${open.id}`,shiftId:null,employeeId,employeeNumber:open.employeeNumber,employeeName:open.employeeName,branchId:open.branchId,branchName:open.branchName,date:new Date(open.occurredAt).toISOString().slice(0,10),scheduledStart:null,scheduledEnd:null,breakMinutes:0,checkInAt:open.occurredAt,checkOutAt:event.occurredAt,workedMinutes:worked,scheduledMinutes:0,overtimeMinutes:worked,lateMinutes:0,earlyLeaveMinutes:0,status:'UNSCHEDULED',needsReview:false});open=null}
+      }
+      if(open){entries.push({entryId:`unscheduled:${open.id}`,shiftId:null,employeeId,employeeNumber:open.employeeNumber,employeeName:open.employeeName,branchId:open.branchId,branchName:open.branchName,date:new Date(open.occurredAt).toISOString().slice(0,10),scheduledStart:null,scheduledEnd:null,breakMinutes:0,checkInAt:open.occurredAt,checkOutAt:null,workedMinutes:Math.max(0,Math.round((Math.min(now,toMs)-new Date(open.occurredAt).getTime())/60000)),scheduledMinutes:0,overtimeMinutes:0,lateMinutes:0,earlyLeaveMinutes:0,status:'OPEN',needsReview:true})}
+    }
+    entries.sort((x,y)=>x.employeeName.localeCompare(y.employeeName)||new Date(x.scheduledStart??x.checkInAt).getTime()-new Date(y.scheduledStart??y.checkInAt).getTime());
+    return{ok:true,period:{from:p.data.from,to:p.data.to},entries};
+  });
+
+  app.post('/v1/admin/timekeeping/corrections',async(request:any,reply:any)=>{
+    const a=requireAdmin(request,reply);if(!a)return;
+    const p=z.object({employeeId:z.uuid(),branchId:z.uuid(),shiftId:z.uuid().nullable().optional(),occurredAt:z.iso.datetime(),reason:z.string().trim().min(3).max(300)}).safeParse(request.body);
+    if(!p.success)return reply.code(400).send({ok:false,error:'INVALID_CORRECTION'});
+    const [employee,branch]=await Promise.all([db.query(`select id from employees where id=$1 and company_id=$2`,[p.data.employeeId,a.companyId]),db.query(`select id from branches where id=$1 and company_id=$2`,[p.data.branchId,a.companyId])]);
+    if(!employee.rowCount)return reply.code(404).send({ok:false,error:'EMPLOYEE_NOT_FOUND'});if(!branch.rowCount)return reply.code(404).send({ok:false,error:'BRANCH_NOT_FOUND'});
+    if(p.data.shiftId){const shift=await db.query(`select id from shifts where id=$1 and company_id=$2 and employee_id=$3`,[p.data.shiftId,a.companyId,p.data.employeeId]);if(!shift.rowCount)return reply.code(404).send({ok:false,error:'SHIFT_NOT_FOUND'})}
+    const at=new Date(p.data.occurredAt);
+    const prior=await db.query(`select action,occurred_at from attendance_events where company_id=$1 and employee_id=$2 and occurred_at<=$3::timestamptz order by occurred_at desc limit 1`,[a.companyId,p.data.employeeId,at.toISOString()]);
+    if(!prior.rowCount||prior.rows[0].action!=='CHECK_IN')return reply.code(409).send({ok:false,error:'NO_OPEN_SESSION'});
+    const c=await db.connect();try{await c.query('BEGIN');const r=await c.query(`insert into attendance_events(company_id,branch_id,device_id,employee_id,shift_id,action,status,occurred_at,source) values($1,$2,null,$3,$4,'CHECK_OUT','ON_TIME',$5,'ADMIN') returning id,occurred_at as "occurredAt"`,[a.companyId,p.data.branchId,p.data.employeeId,p.data.shiftId??null,at.toISOString()]);await c.query(`insert into audit_log(company_id,actor_type,actor_id,action,entity_type,entity_id,metadata) values($1,'ADMIN',$2,'ADD_CHECK_OUT','ATTENDANCE_EVENT',$3,jsonb_build_object('employeeId',$4::uuid,'shiftId',$5::text,'reason',$6))`,[a.companyId,a.email,r.rows[0].id,p.data.employeeId,p.data.shiftId??null,p.data.reason]);await c.query('COMMIT');return reply.code(201).send({ok:true,event:r.rows[0]})}catch(error){await c.query('ROLLBACK');app.log.error(error);return reply.code(500).send({ok:false,error:'CORRECTION_FAILED'})}finally{c.release()}
+  });
+
+  app.get('/v1/admin/pay-period-approval',async(request:any,reply:any)=>{
+    const a=requireAdmin(request,reply);if(!a)return;const p=periodSchema.safeParse(request.query);if(!p.success||!validPeriod(p.success?p.data.from:'',p.success?p.data.to:''))return reply.code(400).send({ok:false,error:'INVALID_REPORT_PERIOD'});
+    const r=await db.query(`select period_from as "from",period_to as "to",include_overtime as "includeOvertime",approved_by as "approvedBy",approved_at as "approvedAt" from pay_period_approvals where company_id=$1 and period_from=$2::timestamptz and period_to=$3::timestamptz limit 1`,[a.companyId,p.data.from,p.data.to]);return{ok:true,approval:r.rows[0]??null};
+  });
+
+  app.post('/v1/admin/pay-period-approval',async(request:any,reply:any)=>{
+    const a=requireAdmin(request,reply);if(!a)return;const p=z.object({from:z.iso.datetime(),to:z.iso.datetime(),includeOvertime:z.boolean()}).safeParse(request.body);if(!p.success||!validPeriod(p.success?p.data.from:'',p.success?p.data.to:''))return reply.code(400).send({ok:false,error:'INVALID_REPORT_PERIOD'});
+    const open=await db.query(`with ordered as(select employee_id,action,occurred_at,lead(action) over(partition by employee_id order by occurred_at) as next_action from attendance_events where company_id=$1 and occurred_at>=$2::timestamptz and occurred_at<$3::timestamptz) select 1 from ordered where action='CHECK_IN' and next_action is null limit 1`,[a.companyId,p.data.from,p.data.to]);if(open.rowCount)return reply.code(409).send({ok:false,error:'UNRESOLVED_OPEN_SESSION'});
+    const r=await db.query(`insert into pay_period_approvals(company_id,period_from,period_to,include_overtime,approved_by) values($1,$2,$3,$4,$5) on conflict(company_id,period_from,period_to) do update set include_overtime=excluded.include_overtime,approved_by=excluded.approved_by,approved_at=now() returning period_from as "from",period_to as "to",include_overtime as "includeOvertime",approved_by as "approvedBy",approved_at as "approvedAt"`,[a.companyId,p.data.from,p.data.to,p.data.includeOvertime,a.email]);await db.query(`insert into audit_log(company_id,actor_type,actor_id,action,entity_type,entity_id,metadata) values($1,'ADMIN',$2,'APPROVE_PAY_PERIOD','PAY_PERIOD',null,jsonb_build_object('from',$3::text,'to',$4::text,'includeOvertime',$5::boolean))`,[a.companyId,a.email,p.data.from,p.data.to,p.data.includeOvertime]);return reply.code(201).send({ok:true,approval:r.rows[0]});
+  });
+};
