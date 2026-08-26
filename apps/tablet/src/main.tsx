@@ -15,7 +15,6 @@ const statusText = (status: AttendanceStatus | undefined) => {
   if (status === 'ON_TIME') return 'You are on time.';
   if (status === 'LATE') return 'Your check-in has been recorded as late.';
   if (status === 'EARLY') return 'You have checked in early.';
-  if (status === 'UNSCHEDULED') return 'No matching scheduled shift was found.';
   return '';
 };
 
@@ -33,6 +32,29 @@ function App() {
     setMessage(null);
 
     try {
+      const occurredAt = new Date().toISOString();
+      const eligibility = await fetch(`${API_URL}/v1/attendance/eligibility`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          companyId: COMPANY_ID,
+          branchId: BRANCH_ID,
+          employeeNumber: employee.trim(),
+          pin,
+          action,
+          occurredAt
+        })
+      });
+      const eligibilityData = await eligibility.json();
+      if (!eligibility.ok) {
+        const text = eligibilityData.error === 'INVALID_EMPLOYEE_OR_PIN'
+          ? 'Employee number or PIN is incorrect.'
+          : eligibilityData.error === 'NO_SCHEDULED_SHIFT'
+            ? 'You do not have a scheduled shift at this branch right now. Please contact your manager.'
+            : 'Unable to verify your scheduled shift. Please try again.';
+        throw new Error(text);
+      }
+
       const response = await fetch(`${API_URL}/v1/attendance/events`, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
@@ -43,7 +65,7 @@ function App() {
           employeeNumber: employee.trim(),
           pin,
           action,
-          occurredAt: new Date().toISOString()
+          occurredAt
         })
       });
 
@@ -53,7 +75,9 @@ function App() {
           ? 'Employee number or PIN is incorrect.'
           : data.error === 'DEVICE_NOT_AUTHORISED'
             ? 'This tablet is not authorised for this branch.'
-            : 'Unable to record attendance. Please try again.';
+            : data.error === 'NO_SCHEDULED_SHIFT' || data.error === 'ATTENDANCE_WRITE_FAILED'
+              ? 'You do not have a scheduled shift at this branch right now. Please contact your manager.'
+              : 'Unable to record attendance. Please try again.';
         throw new Error(text);
       }
 
