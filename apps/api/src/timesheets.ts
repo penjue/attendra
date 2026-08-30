@@ -7,6 +7,14 @@ const validPeriod=(from:string,to:string)=>{const a=new Date(from).getTime(),b=n
 type RequireAdmin=(request:any,reply:any)=>{email:string;companyId:string;exp:number}|null;
 
 export const registerTimesheetRoutes=(app:any,requireAdmin:RequireAdmin)=>{
+  app.post('/v1/devices/heartbeat',async(request:any,reply:any)=>{
+    const p=z.object({companyId:z.uuid(),branchId:z.uuid(),deviceId:z.uuid()}).safeParse(request.body);
+    if(!p.success)return reply.code(400).send({ok:false,error:'INVALID_HEARTBEAT'});
+    const r=await db.query(`update devices set last_seen_at=now() where id=$1 and company_id=$2 and branch_id=$3 and active=true returning id,last_seen_at as "lastSeenAt"`,[p.data.deviceId,p.data.companyId,p.data.branchId]);
+    if(!r.rowCount)return reply.code(403).send({ok:false,error:'DEVICE_NOT_AUTHORISED'});
+    return{ok:true,device:r.rows[0]};
+  });
+
   app.post('/v1/attendance/eligibility',async(request:any,reply:any)=>{
     const p=z.object({companyId:z.uuid(),branchId:z.uuid(),employeeNumber:z.string().trim().min(1).max(64),pin:z.string().regex(/^\d{4,12}$/),occurredAt:z.iso.datetime(),action:z.enum(['CHECK_IN','CHECK_OUT'])}).safeParse(request.body);
     if(!p.success)return reply.code(400).send({ok:false,error:'INVALID_REQUEST'});
