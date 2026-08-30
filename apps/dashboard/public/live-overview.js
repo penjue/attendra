@@ -1,6 +1,7 @@
 (() => {
   const API_URL = 'https://attendra-api.onrender.com';
   const REFRESH_MS = 5000;
+  const RECENT_MS = 3 * 60 * 1000;
   let timer = null;
   let loading = false;
   let selectedDetail = null;
@@ -19,7 +20,7 @@
     .hqPerson{display:flex;justify-content:space-between;gap:12px;padding:11px 0;border-top:1px solid #eef2f7;cursor:pointer;border-radius:10px}
     .hqPerson:hover{background:#f8fafc}.hqPerson:first-of-type{border-top:0}.hqPerson strong,.hqPerson span{display:block}.hqPerson span{color:#64748b;font-size:12px;margin-top:3px;line-height:1.35}
     .hqChip{align-self:flex-start;border-radius:999px;padding:4px 7px;font-size:10px;font-weight:700;white-space:nowrap;background:#f1f5f9;color:#475569}
-    .hqChip.working{background:#ecfdf5;color:#047857}.hqChip.late{background:#fef2f2;color:#b91c1c}.hqChip.missing{background:#fff7ed;color:#c2410c}.hqChip.out{background:#eff6ff;color:#1d4ed8}.hqChip.offline{background:#fef2f2;color:#b91c1c}
+    .hqChip.working{background:#ecfdf5;color:#047857}.hqChip.late{background:#fef2f2;color:#b91c1c}.hqChip.missing{background:#fff7ed;color:#c2410c}.hqChip.out{background:#eff6ff;color:#1d4ed8}.hqChip.recent{background:#fff7ed;color:#c2410c}.hqChip.offline{background:#fef2f2;color:#b91c1c}
     .hqLiveError{color:#b91c1c;background:#fef2f2;border:1px solid #fecaca;border-radius:12px;padding:10px 12px;font-size:13px}
     .hqDetailBackdrop{position:fixed;inset:0;background:rgba(15,23,42,.38);display:grid;place-items:end center;z-index:9999;padding:18px}
     .hqDetailCard{width:min(100%,560px);background:#fff;border-radius:20px;padding:20px;border:1px solid #e2e8f0;box-shadow:0 24px 60px rgba(15,23,42,.22);max-height:85vh;overflow:auto}
@@ -53,7 +54,7 @@
   const sameDay = (a, b) => a.getFullYear() === b.getFullYear() && a.getMonth() === b.getMonth() && a.getDate() === b.getDate();
   const time = value => value ? new Date(value).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '—';
   const dateTime = value => value ? new Date(value).toLocaleString() : '—';
-  const esc = value => String(value ?? '').replace(/[&<>'"]/g, ch => ({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[ch]));
+  const esc = value => String(value ?? '').replace(/[&<>'\"]/g, ch => ({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','\"':'&quot;'}[ch]));
 
   const findHost = () => {
     const active = [...document.querySelectorAll('.tabs button')].find(b => b.classList.contains('active'));
@@ -66,8 +67,7 @@
   const eventForShift = (events, shift) => {
     const start = new Date(shift.startsAt).getTime() - 4 * 60 * 60 * 1000;
     const end = new Date(shift.endsAt).getTime() + 4 * 60 * 60 * 1000;
-    return events
-      .filter(e => e.employeeNumber === shift.employeeNumber && e.branchName === shift.branchName)
+    return events.filter(e => e.employeeNumber === shift.employeeNumber && e.branchName === shift.branchName)
       .filter(e => { const t = new Date(e.occurredAt).getTime(); return t >= start && t <= end; })
       .sort((a,b) => new Date(b.occurredAt) - new Date(a.occurredAt))[0] || null;
   };
@@ -78,9 +78,16 @@
     return `<div class="hqPerson" data-live-detail="${encodeDetail(item)}"><div><strong>${esc(item.employeeName)}</strong><span>#${esc(item.employeeNumber)} · ${esc(item.branchName)}</span><span>${esc(item.detail)}</span></div><b class="hqChip ${kind}">${labels[kind]}</b></div>`;
   };
 
+  const deviceHealth = device => {
+    if (device.online) return { key:'online', label:'ONLINE', chip:'working' };
+    if (device.lastSeenAt && Date.now() - new Date(device.lastSeenAt).getTime() <= RECENT_MS) return { key:'recent', label:'RECENTLY DISCONNECTED', chip:'recent' };
+    return { key:'offline', label:'OFFLINE', chip:'offline' };
+  };
+
   const renderDevice = device => {
-    const detail = { type:'device', title:device.name, branchName:device.branchName, online:device.online, lastSeenAt:device.lastSeenAt, active:device.active };
-    return `<div class="hqPerson" data-live-detail="${encodeDetail(detail)}"><div><strong>${esc(device.name)}</strong><span>${esc(device.branchName)}</span><span>${device.lastSeenAt ? `Last seen ${esc(dateTime(device.lastSeenAt))}` : 'Never seen'}</span></div><b class="hqChip ${device.online ? 'working' : 'offline'}">${device.online ? 'ONLINE' : 'OFFLINE'}</b></div>`;
+    const health = deviceHealth(device);
+    const detail = { type:'device', title:device.name, branchName:device.branchName, health:health.key, lastSeenAt:device.lastSeenAt, active:device.active };
+    return `<div class="hqPerson" data-live-detail="${encodeDetail(detail)}"><div><strong>${esc(device.name)}</strong><span>${esc(device.branchName)}</span><span>${device.lastSeenAt ? `Last seen ${esc(dateTime(device.lastSeenAt))}` : 'Never seen'}</span></div><b class="hqChip ${health.chip}">${health.label}</b></div>`;
   };
 
   const showDetail = detail => {
@@ -90,7 +97,8 @@
     backdrop.id = 'hq-live-detail';
     backdrop.className = 'hqDetailBackdrop';
     const employeeMode = detail.type !== 'device';
-    const statusText = detail.type === 'working' ? (detail.late ? 'Late & on site' : 'On site') : detail.type === 'missing' ? 'Not arrived' : detail.type === 'out' ? 'Checked out' : detail.online ? 'Online' : 'Offline';
+    const deviceStatus = detail.health === 'online' ? 'Online' : detail.health === 'recent' ? 'Recently disconnected' : 'Offline';
+    const statusText = detail.type === 'working' ? (detail.late ? 'Late & on site' : 'On site') : detail.type === 'missing' ? 'Not arrived' : detail.type === 'out' ? 'Checked out' : deviceStatus;
     backdrop.innerHTML = `<div class="hqDetailCard"><div class="hqDetailHead"><div><h3>${esc(employeeMode ? detail.employeeName : detail.title)}</h3><span>${esc(employeeMode ? `#${detail.employeeNumber} · ${detail.branchName}` : detail.branchName)}</span></div><button class="hqDetailClose" type="button">Close</button></div>
       <div class="hqDetailGrid">
         <div class="hqDetailMetric"><small>Status</small><strong>${esc(statusText)}</strong></div>
@@ -100,7 +108,7 @@
         <div class="hqDetailMetric"><small>Check in</small><strong>${time(detail.checkInAt)}</strong></div>
         <div class="hqDetailMetric"><small>Check out</small><strong>${time(detail.checkOutAt)}</strong></div>` : `<div class="hqDetailMetric"><small>Active</small><strong>${detail.active ? 'Yes' : 'No'}</strong></div><div class="hqDetailMetric"><small>Last heartbeat</small><strong>${esc(dateTime(detail.lastSeenAt))}</strong></div>`}
       </div>
-      <p class="hqDetailNote">${esc(detail.detail || (employeeMode ? 'Live attendance and shift information for this employee.' : 'Tablet connectivity is updated by the automatic heartbeat while the tablet page is open.'))}</p></div>`;
+      <p class="hqDetailNote">${esc(detail.detail || (employeeMode ? 'Live attendance and shift information for this employee.' : 'Online means a current heartbeat. Recently disconnected means the last heartbeat was within 3 minutes. Older devices are shown as offline.'))}</p></div>`;
     document.body.appendChild(backdrop);
     backdrop.querySelector('.hqDetailClose')?.addEventListener('click', () => backdrop.remove());
     backdrop.addEventListener('click', event => { if (event.target === backdrop) backdrop.remove(); });
@@ -155,7 +163,8 @@
         return { type:'out', ...e, startsAt:shift?.startsAt ?? null, endsAt:shift?.endsAt ?? null, checkInAt:null, checkOutAt:e.occurredAt, detail: `Checked out ${time(e.occurredAt)}` };
       });
       const activeDevices = deviceData.devices.filter(d => d.active);
-      const onlineDevices = activeDevices.filter(d => d.online);
+      const onlineDevices = activeDevices.filter(d => deviceHealth(d).key === 'online');
+      const recentDevices = activeDevices.filter(d => deviceHealth(d).key === 'recent');
       const lateWorking = working.filter(w => w.late).length;
 
       panel.innerHTML = `<div class="hqLiveHead"><div><h2>HQ live status</h2><span>Tap a person or tablet for operational details.</span></div><b class="hqPulse">LIVE · 5 SEC</b></div>
@@ -163,7 +172,7 @@
           <div class="hqLiveStat"><strong>${working.length}</strong><span>Working now</span></div>
           <div class="hqLiveStat"><strong>${lateWorking}</strong><span>Late & on site</span></div>
           <div class="hqLiveStat"><strong>${missing.length}</strong><span>Not arrived</span></div>
-          <div class="hqLiveStat"><strong>${onlineDevices.length}/${activeDevices.length}</strong><span>Tablets online</span></div>
+          <div class="hqLiveStat"><strong>${onlineDevices.length}/${activeDevices.length}</strong><span>Tablets online${recentDevices.length ? ` · ${recentDevices.length} recent` : ''}</span></div>
         </div>
         <div class="hqLiveColumns">
           <div class="hqLiveGroup"><h3>Currently working</h3>${working.length ? working.map(w => renderPerson(w, w.late ? 'late' : 'working')).join('') : '<p class="hqLiveEmpty">No employees are currently checked in.</p>'}</div>
