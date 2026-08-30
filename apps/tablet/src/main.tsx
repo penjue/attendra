@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import './styles.css';
 
@@ -25,6 +25,31 @@ function App() {
   const [message, setMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
 
   const configured = Boolean(COMPANY_ID && BRANCH_ID && DEVICE_ID);
+
+  useEffect(() => {
+    if (!configured) return;
+    const heartbeat = async () => {
+      try {
+        await fetch(`${API_URL}/v1/devices/heartbeat`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ companyId: COMPANY_ID, branchId: BRANCH_ID, deviceId: DEVICE_ID })
+        });
+      } catch {
+        // Attendance remains available even if a heartbeat temporarily fails.
+      }
+    };
+    heartbeat();
+    const timer = window.setInterval(heartbeat, 60_000);
+    const onVisible = () => { if (document.visibilityState === 'visible') heartbeat(); };
+    document.addEventListener('visibilitychange', onVisible);
+    window.addEventListener('focus', heartbeat);
+    return () => {
+      window.clearInterval(timer);
+      document.removeEventListener('visibilitychange', onVisible);
+      window.removeEventListener('focus', heartbeat);
+    };
+  }, [configured]);
 
   const submit = async (action: 'CHECK_IN' | 'CHECK_OUT') => {
     if (!configured || !employee || pin.length < 4 || busy) return;
