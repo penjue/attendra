@@ -11,11 +11,53 @@ const alertSettingsSchema=z.object({
   notifyHighPriority:z.boolean(),
   notifyMediumPriority:z.boolean()
 });
+const pilotCompanySchema=z.object({
+  name:z.string().trim().min(2).max(160),
+  countryCode:z.enum(['GB','KE']),
+  timezone:z.string().trim().min(2).max(100),
+  currency:z.enum(['GBP','KES']),
+  ownerEmail:z.email(),
+  ownerPassword:z.string().min(10).max(256),
+  firstBranchName:z.string().trim().min(2).max(120).optional(),
+  firstBranchAddress:z.string().trim().max(300).optional()
+});
 const defaultAlertSettings={lateAfterMinutes:5,missedShiftAfterMinutes:10,missingCheckoutAfterMinutes:15,tabletOfflineAfterMinutes:3,notifyHighPriority:true,notifyMediumPriority:false};
 
 type RequireAdmin=(request:any,reply:any)=>{email:string;companyId:string;exp:number}|null;
+const isPlatformAdmin=(a:{email:string;companyId:string})=>a.email.trim().toLowerCase()===(process.env.ADMIN_EMAIL??'').trim().toLowerCase()&&a.companyId===(process.env.ADMIN_COMPANY_ID??'');
 
 export const registerTimesheetRoutes=(app:any,requireAdmin:RequireAdmin)=>{
+  app.get('/v1/platform/companies',async(request:any,reply:any)=>{
+    const a=requireAdmin(request,reply);if(!a)return;if(!isPlatformAdmin(a))return reply.code(403).send({ok:false,error:'PLATFORM_ADMIN_REQUIRED'});
+    const r=await db.query(`select c.id,c.name,c.country_code as "countryCode",c.timezone,c.currency,c.created_at as "createdAt",count(distinct ca.id)::int as "adminCount",count(distinct b.id)::int as "branchCount",count(distinct e.id)::int as "employeeCount" from companies c left join company_admins ca on ca.company_id=c.id and ca.active=true left join branches b on b.company_id=c.id and b.active=true left join employees e on e.company_id=c.id and e.active=true group by c.id order by c.created_at desc`);
+    return{ok:true,companies:r.rows};
+  });
+
+  app.post('/v1/platform/companies',async(request:any,reply:any)=>{
+    const a=requireAdmin(request,reply);if(!a)return;if(!isPlatformAdmin(a))return reply.code(403).send({ok:false,error:'PLATFORM_ADMIN_REQUIRED'});
+    const p=pilotCompanySchema.safeParse(request.body);if(!p.success)return reply.code(400).send({ok:false,error:'INVALID_PILOT_COMPANY',details:p.error.flatten()});
+    if((p.data.countryCode==='GB'&&p.data.currency!=='GBP')||(p.data.countryCode==='KE'&&p.data.currency!=='KES'))return reply.code(400).send({ok:false,error:'COUNTRY_CURRENCY_MISMATCH'});
+    const c=await db.connect();
+    try{
+      await c.query('BEGIN');
+      const company=await c.query(`insert into companies(name,country_code,timezone,currency) values($1,$2,$3,$4) returning id,name,country_code as "countryCode",timezone,currency,created_at as "createdAt"`,[p.data.name,p.data.countryCode,p.data.timezone,p.data.currency]);
+      const companyId=company.rows[0].id;
+      const owner=await c.query(`insert into company_admins(company_id,email,password_hash,role) values($1,lower($2),crypt($3,gen_salt('bf')),'OWNER') returning id,email,role,created_at as "createdAt"`,[companyId,p.data.ownerEmail,p.data.ownerPassword]);
+      let branch=null;
+      if(p.data.firstBranchName){
+        const br=await c.query(`insert into branches(company_id,name,timezone,address) values($1,$2,$3,$4) returning id,name,timezone,address,active,created_at as "createdAt"`,[companyId,p.data.firstBranchName,p.data.timezone,p.data.firstBranchAddress||null]);branch=br.rows[0];
+      }
+      await c.query(`insert into company_alert_settings(company_id) values($1) on conflict(company_id) do nothing`,[companyId]);
+      await c.query(`insert into audit_log(company_id,actor_type,actor_id,action,entity_type,entity_id,metadata) values($1::uuid,'PLATFORM_ADMIN',$2::text,'CREATE_PILOT_COMPANY','COMPANY',$1::text,jsonb_build_object('ownerEmail',$3::text,'createdByCompanyId',$4::text))`,[companyId,a.email,p.data.ownerEmail,a.companyId]);
+      await c.query('COMMIT');
+      return reply.code(201).send({ok:true,company:company.rows[0],owner:owner.rows[0],branch});
+    }catch(error:any){
+      await c.query('ROLLBACK');
+      if(error?.code==='23505')return reply.code(409).send({ok:false,error:'OWNER_EMAIL_ALREADY_EXISTS'});
+      app.log.error(error);return reply.code(500).send({ok:false,error:'PILOT_COMPANY_CREATE_FAILED'});
+    }finally{c.release()}
+  });
+
   app.get('/v1/admin/alert-settings',async(request:any,reply:any)=>{
     const a=requireAdmin(request,reply);if(!a)return;
     const r=await db.query(`select late_after_minutes as "lateAfterMinutes",missed_shift_after_minutes as "missedShiftAfterMinutes",missing_checkout_after_minutes as "missingCheckoutAfterMinutes",tablet_offline_after_minutes as "tabletOfflineAfterMinutes",notify_high_priority as "notifyHighPriority",notify_medium_priority as "notifyMediumPriority",updated_by as "updatedBy",updated_at as "updatedAt" from company_alert_settings where company_id=$1 limit 1`,[a.companyId]);
