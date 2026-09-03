@@ -95,6 +95,18 @@ CREATE TABLE IF NOT EXISTS pay_period_approvals (
   UNIQUE(company_id, period_from, period_to)
 );
 
+CREATE TABLE IF NOT EXISTS company_alert_settings (
+  company_id uuid PRIMARY KEY REFERENCES companies(id) ON DELETE CASCADE,
+  late_after_minutes integer NOT NULL DEFAULT 5 CHECK (late_after_minutes BETWEEN 0 AND 180),
+  missed_shift_after_minutes integer NOT NULL DEFAULT 10 CHECK (missed_shift_after_minutes BETWEEN 1 AND 180),
+  missing_checkout_after_minutes integer NOT NULL DEFAULT 15 CHECK (missing_checkout_after_minutes BETWEEN 1 AND 240),
+  tablet_offline_after_minutes integer NOT NULL DEFAULT 3 CHECK (tablet_offline_after_minutes BETWEEN 1 AND 60),
+  notify_high_priority boolean NOT NULL DEFAULT true,
+  notify_medium_priority boolean NOT NULL DEFAULT false,
+  updated_by text,
+  updated_at timestamptz NOT NULL DEFAULT now()
+);
+
 CREATE TABLE IF NOT EXISTS audit_log (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   company_id uuid REFERENCES companies(id) ON DELETE CASCADE,
