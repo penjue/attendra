@@ -3,10 +3,34 @@ import { db } from './db.js';
 
 const periodSchema=z.object({from:z.iso.datetime(),to:z.iso.datetime()});
 const validPeriod=(from:string,to:string)=>{const a=new Date(from).getTime(),b=new Date(to).getTime();return b>a&&b-a<=1000*60*60*24*366};
+const alertSettingsSchema=z.object({
+  lateAfterMinutes:z.number().int().min(0).max(180),
+  missedShiftAfterMinutes:z.number().int().min(1).max(180),
+  missingCheckoutAfterMinutes:z.number().int().min(1).max(240),
+  tabletOfflineAfterMinutes:z.number().int().min(1).max(60),
+  notifyHighPriority:z.boolean(),
+  notifyMediumPriority:z.boolean()
+});
+const defaultAlertSettings={lateAfterMinutes:5,missedShiftAfterMinutes:10,missingCheckoutAfterMinutes:15,tabletOfflineAfterMinutes:3,notifyHighPriority:true,notifyMediumPriority:false};
 
 type RequireAdmin=(request:any,reply:any)=>{email:string;companyId:string;exp:number}|null;
 
 export const registerTimesheetRoutes=(app:any,requireAdmin:RequireAdmin)=>{
+  app.get('/v1/admin/alert-settings',async(request:any,reply:any)=>{
+    const a=requireAdmin(request,reply);if(!a)return;
+    const r=await db.query(`select late_after_minutes as "lateAfterMinutes",missed_shift_after_minutes as "missedShiftAfterMinutes",missing_checkout_after_minutes as "missingCheckoutAfterMinutes",tablet_offline_after_minutes as "tabletOfflineAfterMinutes",notify_high_priority as "notifyHighPriority",notify_medium_priority as "notifyMediumPriority",updated_by as "updatedBy",updated_at as "updatedAt" from company_alert_settings where company_id=$1 limit 1`,[a.companyId]);
+    return{ok:true,settings:r.rows[0]??defaultAlertSettings};
+  });
+
+  app.put('/v1/admin/alert-settings',async(request:any,reply:any)=>{
+    const a=requireAdmin(request,reply);if(!a)return;
+    const p=alertSettingsSchema.safeParse(request.body);if(!p.success)return reply.code(400).send({ok:false,error:'INVALID_ALERT_SETTINGS',details:p.error.flatten()});
+    const s=p.data;
+    const r=await db.query(`insert into company_alert_settings(company_id,late_after_minutes,missed_shift_after_minutes,missing_checkout_after_minutes,tablet_offline_after_minutes,notify_high_priority,notify_medium_priority,updated_by) values($1,$2,$3,$4,$5,$6,$7,$8) on conflict(company_id) do update set late_after_minutes=excluded.late_after_minutes,missed_shift_after_minutes=excluded.missed_shift_after_minutes,missing_checkout_after_minutes=excluded.missing_checkout_after_minutes,tablet_offline_after_minutes=excluded.tablet_offline_after_minutes,notify_high_priority=excluded.notify_high_priority,notify_medium_priority=excluded.notify_medium_priority,updated_by=excluded.updated_by,updated_at=now() returning late_after_minutes as "lateAfterMinutes",missed_shift_after_minutes as "missedShiftAfterMinutes",missing_checkout_after_minutes as "missingCheckoutAfterMinutes",tablet_offline_after_minutes as "tabletOfflineAfterMinutes",notify_high_priority as "notifyHighPriority",notify_medium_priority as "notifyMediumPriority",updated_by as "updatedBy",updated_at as "updatedAt"`,[a.companyId,s.lateAfterMinutes,s.missedShiftAfterMinutes,s.missingCheckoutAfterMinutes,s.tabletOfflineAfterMinutes,s.notifyHighPriority,s.notifyMediumPriority,a.email]);
+    await db.query(`insert into audit_log(company_id,actor_type,actor_id,action,entity_type,entity_id,metadata) values($1,'ADMIN',$2,'UPDATE_ALERT_SETTINGS','COMPANY_ALERT_SETTINGS',$1::text,$3::jsonb)`,[a.companyId,a.email,JSON.stringify(s)]);
+    return{ok:true,settings:r.rows[0]};
+  });
+
   app.post('/v1/devices/heartbeat',async(request:any,reply:any)=>{
     const p=z.object({companyId:z.uuid(),branchId:z.uuid(),deviceId:z.uuid()}).safeParse(request.body);
     if(!p.success)return reply.code(400).send({ok:false,error:'INVALID_HEARTBEAT'});
