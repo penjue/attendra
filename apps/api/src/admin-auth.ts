@@ -36,7 +36,7 @@ const successfulLogin=async(a:any)=>{
   const expiresAt=Date.now()+8*60*60*1000;
   if(a.id){
     await db.query('update company_admins set last_login_at=now() where id=$1',[a.id]);
-    await db.query(`insert into audit_log(company_id,actor_type,actor_id,action,entity_type,entity_id,metadata) values($1,'ADMIN',$2,'ADMIN_LOGIN','COMPANY_ADMIN',$2,jsonb_build_object('email',$3))`,[a.companyId,a.id,a.email]);
+    await db.query(`insert into audit_log(company_id,actor_type,actor_id,action,entity_type,entity_id,metadata) values($1::uuid,'ADMIN',$2::text,'ADMIN_LOGIN','COMPANY_ADMIN',$2::text,jsonb_build_object('email',$3::text))`,[a.companyId,String(a.id),String(a.email)]);
   }
   return {status:200,body:{ok:true,token:signAdminToken({adminId:a.id,email:a.email,companyId:a.companyId,role:a.role??'OWNER',exp:expiresAt}),expiresAt,companyId:a.companyId,email:a.email,role:a.role??'OWNER',companyName:a.companyName}};
 };
@@ -48,8 +48,6 @@ export async function loginCompanyAdmin(body:unknown){
   const r=await db.query(`select ca.id,ca.company_id as "companyId",ca.email,ca.role,c.name as "companyName" from company_admins ca join companies c on c.id=ca.company_id where lower(ca.email)=lower($1) and ca.active=true and ca.password_hash=crypt($2,ca.password_hash) limit 1`,[email,parsed.data.password]);
   if(r.rowCount)return successfulLogin(r.rows[0]);
 
-  // Temporary migration safety net: preserve the original Render admin credentials
-  // until the database-backed account has been confirmed on the live service.
   const legacyEmail=(process.env.ADMIN_EMAIL??'').trim().toLowerCase();
   const legacyPassword=process.env.ADMIN_PASSWORD??'';
   const legacyCompanyId=process.env.ADMIN_COMPANY_ID??'';
