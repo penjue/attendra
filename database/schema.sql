@@ -21,6 +21,18 @@ CREATE TABLE IF NOT EXISTS companies (
   created_at timestamptz NOT NULL DEFAULT now()
 );
 
+CREATE TABLE IF NOT EXISTS company_admins (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  company_id uuid NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+  email text NOT NULL,
+  password_hash text NOT NULL,
+  role text NOT NULL DEFAULT 'ADMIN' CHECK (role IN ('OWNER','ADMIN','MANAGER')),
+  active boolean NOT NULL DEFAULT true,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  last_login_at timestamptz,
+  UNIQUE(lower(email))
+);
+
 CREATE TABLE IF NOT EXISTS branches (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   company_id uuid NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
@@ -134,6 +146,7 @@ CREATE TRIGGER trg_prevent_unscheduled_tablet_attendance
 BEFORE INSERT ON attendance_events
 FOR EACH ROW EXECUTE FUNCTION prevent_unscheduled_tablet_attendance();
 
+CREATE INDEX IF NOT EXISTS idx_company_admins_company ON company_admins(company_id, active);
 CREATE INDEX IF NOT EXISTS idx_attendance_company_time ON attendance_events(company_id, occurred_at DESC);
 CREATE INDEX IF NOT EXISTS idx_attendance_employee_time ON attendance_events(employee_id, occurred_at DESC);
 CREATE INDEX IF NOT EXISTS idx_shifts_employee_start ON shifts(employee_id, starts_at);
