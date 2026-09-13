@@ -1,13 +1,19 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import './styles.css';
 
 const env = (import.meta as any).env as Record<string, string | undefined>;
 const API_URL = env.VITE_API_URL ?? 'http://localhost:4000';
-const COMPANY_ID = env.VITE_COMPANY_ID ?? '';
-const BRANCH_ID = env.VITE_BRANCH_ID ?? '';
-const DEVICE_ID = env.VITE_DEVICE_ID ?? '';
-const BRANCH_NAME = env.VITE_BRANCH_NAME ?? 'Attendra Branch';
+const STORAGE_KEY = 'attendra_tablet_config_v1';
+
+type TabletConfig = {
+  companyId: string;
+  branchId: string;
+  deviceId: string;
+  branchName: string;
+  deviceName?: string;
+  deviceKey?: string;
+};
 
 type AttendanceStatus = 'ON_TIME' | 'LATE' | 'EARLY' | 'UNSCHEDULED';
 
@@ -18,22 +24,76 @@ const statusText = (status: AttendanceStatus | undefined) => {
   return '';
 };
 
+const readStoredConfig = (): TabletConfig | null => {
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY);
+    if (!raw) return null;
+    const value = JSON.parse(raw) as TabletConfig;
+    return value.companyId && value.branchId && value.deviceId ? value : null;
+  } catch {
+    return null;
+  }
+};
+
+const legacyConfig = (): TabletConfig | null => {
+  const companyId = env.VITE_COMPANY_ID ?? '';
+  const branchId = env.VITE_BRANCH_ID ?? '';
+  const deviceId = env.VITE_DEVICE_ID ?? '';
+  if (!companyId || !branchId || !deviceId) return null;
+  return {
+    companyId,
+    branchId,
+    deviceId,
+    branchName: env.VITE_BRANCH_NAME ?? 'Attendra Branch'
+  };
+};
+
+const configFromUrl = (): TabletConfig | null => {
+  const p = new URLSearchParams(window.location.search);
+  const companyId = p.get('companyId')?.trim() ?? '';
+  const branchId = p.get('branchId')?.trim() ?? '';
+  const deviceId = p.get('deviceId')?.trim() ?? '';
+  if (!companyId || !branchId || !deviceId) return null;
+  return {
+    companyId,
+    branchId,
+    deviceId,
+    branchName: p.get('branchName')?.trim() || 'Attendra Branch',
+    deviceName: p.get('deviceName')?.trim() || undefined,
+    deviceKey: p.get('deviceKey')?.trim() || undefined
+  };
+};
+
 function App() {
+  const [config, setConfig] = useState<TabletConfig | null>(() => readStoredConfig() ?? legacyConfig());
   const [employee, setEmployee] = useState('');
   const [pin, setPin] = useState('');
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
 
-  const configured = Boolean(COMPANY_ID && BRANCH_ID && DEVICE_ID);
+  useEffect(() => {
+    const incoming = configFromUrl();
+    if (!incoming) return;
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(incoming));
+    setConfig(incoming);
+    window.history.replaceState({}, document.title, window.location.pathname);
+  }, []);
+
+  const configured = Boolean(config?.companyId && config?.branchId && config?.deviceId);
 
   useEffect(() => {
-    if (!configured) return;
+    if (!configured || !config) return;
     const heartbeat = async () => {
       try {
         await fetch(`${API_URL}/v1/devices/heartbeat`, {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({ companyId: COMPANY_ID, branchId: BRANCH_ID, deviceId: DEVICE_ID })
+          body: JSON.stringify({
+            companyId: config.companyId,
+            branchId: config.branchId,
+            deviceId: config.deviceId,
+            deviceKey: config.deviceKey
+          })
         });
       } catch {
         // Attendance remains available even if a heartbeat temporarily fails.
@@ -49,10 +109,10 @@ function App() {
       document.removeEventListener('visibilitychange', onVisible);
       window.removeEventListener('focus', heartbeat);
     };
-  }, [configured]);
+  }, [configured, config]);
 
   const submit = async (action: 'CHECK_IN' | 'CHECK_OUT') => {
-    if (!configured || !employee || pin.length < 4 || busy) return;
+    if (!config || !configured || !employee || pin.length < 4 || busy) return;
     setBusy(true);
     setMessage(null);
 
@@ -62,8 +122,8 @@ function App() {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({
-          companyId: COMPANY_ID,
-          branchId: BRANCH_ID,
+          companyId: config.companyId,
+          branchId: config.branchId,
           employeeNumber: employee.trim(),
           pin,
           action,
@@ -84,9 +144,10 @@ function App() {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({
-          companyId: COMPANY_ID,
-          branchId: BRANCH_ID,
-          deviceId: DEVICE_ID,
+          companyId: config.companyId,
+          branchId: config.branchId,
+          deviceId: config.deviceId,
+          deviceKey: config.deviceKey,
           employeeNumber: employee.trim(),
           pin,
           action,
@@ -121,20 +182,40 @@ function App() {
     }
   };
 
+  const resetTablet = () => {
+    if (!window.confirm('Remove this tablet registration from this browser? The tablet will need to be activated again.')) return;
+    localStorage.removeItem(STORAGE_KEY);
+    setConfig(null);
+    setMessage(null);
+  };
+
+  if (!configured || !config) {
+    return <main className="kiosk">
+      <div className="brand">Attendra</div>
+      <p className="branch">Tablet activation</p>
+      <section className="card">
+        <h1>Set up this tablet</h1>
+        <p>This device has not been assigned to a company branch yet.</p>
+        <div className="notice error">Ask your company administrator to open Devices in Attendra HQ and generate a tablet activation link.</div>
+        <p>Open that activation link on this tablet. Attendra will then remember the company, branch and tablet automatically.</p>
+      </section>
+    </main>;
+  }
+
   return <main className="kiosk">
     <div className="brand">Attendra</div>
-    <p className="branch">{BRANCH_NAME} · Registered tablet</p>
+    <p className="branch">{config.branchName} · Registered tablet</p>
     <section className="card">
       <h1>Welcome</h1><p>Enter your employee number and PIN.</p>
-      {!configured && <div className="notice error">This tablet has not been registered yet.</div>}
       {message && <div className={`notice ${message.type}`}>{message.text}</div>}
       <label>Employee number<input autoComplete="off" value={employee} onChange={e=>setEmployee(e.target.value)} placeholder="e.g. 1042" /></label>
       <label>PIN<input type="password" inputMode="numeric" autoComplete="off" value={pin} onChange={e=>setPin(e.target.value.replace(/\D/g, '').slice(0, 12))} placeholder="••••" /></label>
       <div className="actions">
-        <button onClick={()=>submit('CHECK_IN')} disabled={!configured||!employee||pin.length<4||busy}>{busy ? 'Please wait…' : 'Check in'}</button>
-        <button onClick={()=>submit('CHECK_OUT')} className="secondary" disabled={!configured||!employee||pin.length<4||busy}>Check out</button>
+        <button onClick={()=>submit('CHECK_IN')} disabled={!employee||pin.length<4||busy}>{busy ? 'Please wait…' : 'Check in'}</button>
+        <button onClick={()=>submit('CHECK_OUT')} className="secondary" disabled={!employee||pin.length<4||busy}>Check out</button>
       </div>
       <small>Your PIN is verified securely and is never stored in the attendance record.</small>
+      <button className="secondary" style={{marginTop: 16, width: '100%'}} onClick={resetTablet}>Tablet settings</button>
     </section>
   </main>;
 }
