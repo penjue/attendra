@@ -1,6 +1,14 @@
 (() => {
   const originalFetch = window.fetch.bind(window);
   const ATTENDRA_API = 'https://attendra-api.onrender.com';
+  const TOKEN_KEY = 'attendra_admin_token';
+
+  function syncSessionToken() {
+    const sessionToken = sessionStorage.getItem(TOKEN_KEY) || '';
+    if (sessionToken) localStorage.setItem(TOKEN_KEY, sessionToken);
+    else localStorage.removeItem(TOKEN_KEY);
+    return sessionToken;
+  }
 
   function companyIdFromToken(token) {
     if (!token) return '';
@@ -17,8 +25,11 @@
   }
 
   function storedToken() {
-    return sessionStorage.getItem('attendra_admin_token') || '';
+    return sessionStorage.getItem(TOKEN_KEY) || localStorage.getItem(TOKEN_KEY) || '';
   }
+
+  syncSessionToken();
+  window.setInterval(syncSessionToken, 1000);
 
   function tokenFromInit(init) {
     try {
