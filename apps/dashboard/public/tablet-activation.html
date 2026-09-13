@@ -25,9 +25,17 @@
 (() => {
   const API_URL = 'https://attendra-api.onrender.com';
   const TABLET_URL = 'https://attendra-tablet.onrender.com';
-  const token = sessionStorage.getItem('attendra_admin_token') || '';
   const status = document.getElementById('status');
   const devicesEl = document.getElementById('devices');
+
+  function readToken(){
+    let token=sessionStorage.getItem('attendra_admin_token')||localStorage.getItem('attendra_admin_token')||'';
+    if(!token && window.opener){
+      try{token=window.opener.sessionStorage.getItem('attendra_admin_token')||''}catch{}
+    }
+    return token;
+  }
+  const token=readToken();
 
   function companyIdFromToken(value){
     if(!value) return '';
@@ -37,12 +45,13 @@
   const companyId=companyIdFromToken(token);
   const headers={'Content-Type':'application/json','Authorization':`Bearer ${token}`};
 
-  function escapeHtml(value){return String(value??'').replace(/[&<>'"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[c]))}
+  function escapeHtml(value){return String(value??'').replace(/[&<>'\"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','\"':'&quot;'}[c]))}
   function showStatus(text,error=false){status.innerHTML=`<div class="notice ${error?'error':''}">${escapeHtml(text)}</div>`}
 
   async function api(path,options={}){
     const response=await fetch(API_URL+path,{...options,headers:{...headers,...(options.headers||{})}});
     const data=await response.json();
+    if(response.status===401){localStorage.removeItem('attendra_admin_token');sessionStorage.removeItem('attendra_admin_token')}
     if(!response.ok) throw new Error(data.error||'Request failed');
     return data;
   }
@@ -62,7 +71,7 @@
   }
 
   async function load(){
-    if(!token||!companyId){devicesEl.innerHTML='<div class="notice error">Sign in to Attendra HQ first, then open this page again.</div>';return}
+    if(!token||!companyId){devicesEl.innerHTML='<div class="notice error">Your Attendra HQ session was not found. Return to the dashboard, sign in, and open Tablet activation again.</div>';return}
     try{
       const data=await api('/v1/admin/devices');
       if(!data.devices.length){devicesEl.innerHTML='<p>No tablets are registered yet. Register a tablet from Devices in the main dashboard first.</p>';return}
