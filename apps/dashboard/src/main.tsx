@@ -8,7 +8,8 @@ type Employee = { id: string; employeeNumber: string; firstName: string; lastNam
 type Branch = { id: string; name: string; timezone: string; address: string | null; active: boolean; createdAt: string; deviceCount?: number };
 type Device = { id: string; name: string; branchId: string; branchName: string; lastSeenAt: string | null; active: boolean; online: boolean; createdAt: string };
 type Shift = { id: string; employeeId: string; employeeName: string; employeeNumber: string; branchId: string; branchName: string; startsAt: string; endsAt: string; breakMinutes: number; createdAt: string };
-type Tab = 'overview' | 'employees' | 'branches' | 'devices' | 'shifts' | 'timekeeping';
+type AlertSettings = { lateAfterMinutes: number; missedShiftAfterMinutes: number; missingCheckoutAfterMinutes: number; tabletOfflineAfterMinutes: number; notifyHighPriority: boolean; notifyMediumPriority: boolean; updatedBy?: string | null; updatedAt?: string | null };
+type Tab = 'overview' | 'employees' | 'branches' | 'devices' | 'shifts' | 'timekeeping' | 'rules';
 type TimeRow = { employeeId: string; employeeNumber: string; employeeName: string; workedMinutes: number; scheduledMinutes: number; overtimeMinutes: number; lateEvents: number; earlyEvents: number; missedShifts: number; openSession: boolean };
 type TimeTotals = { workedMinutes: number; scheduledMinutes: number; overtimeMinutes: number; lateEvents: number; earlyEvents: number; missedShifts: number; openSessions: number };
 type TimesheetEntry = { entryId: string; shiftId: string | null; employeeId: string; employeeNumber: string; employeeName: string; branchId: string; branchName: string; date: string; scheduledStart: string | null; scheduledEnd: string | null; breakMinutes: number; checkInAt: string | null; checkOutAt: string | null; workedMinutes: number; scheduledMinutes: number; overtimeMinutes: number; lateMinutes: number; earlyLeaveMinutes: number; status: 'COMPLETE' | 'OPEN' | 'MISSED' | 'UPCOMING' | 'UNSCHEDULED'; needsReview: boolean };
@@ -57,6 +58,8 @@ function App() {
   const [selectedTimeEmployee, setSelectedTimeEmployee] = useState('');
   const [timeMessage, setTimeMessage] = useState('');
   const [includeOvertime, setIncludeOvertime] = useState(() => localStorage.getItem('attendra_include_overtime') !== 'false');
+  const [alertSettings, setAlertSettings] = useState<AlertSettings>({ lateAfterMinutes: 5, missedShiftAfterMinutes: 10, missingCheckoutAfterMinutes: 15, tabletOfflineAfterMinutes: 3, notifyHighPriority: true, notifyMediumPriority: false });
+  const [rulesMessage, setRulesMessage] = useState('');
 
   const makeHeaders = (extra?: HeadersInit) => {
     const headers = new Headers(extra);
@@ -122,6 +125,20 @@ function App() {
     const timer = window.setInterval(loadOverview, 5000);
     return () => window.clearInterval(timer);
   }, [token]);
+
+  const saveAlertSettings = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault(); setRulesMessage(''); const form = new FormData(event.currentTarget);
+    const settings: AlertSettings = {
+      lateAfterMinutes: Number(form.get('lateAfterMinutes')),
+      missedShiftAfterMinutes: Number(form.get('missedShiftAfterMinutes')),
+      missingCheckoutAfterMinutes: Number(form.get('missingCheckoutAfterMinutes')),
+      tabletOfflineAfterMinutes: Number(form.get('tabletOfflineAfterMinutes')),
+      notifyHighPriority: form.get('notifyHighPriority') === 'on',
+      notifyMediumPriority: form.get('notifyMediumPriority') === 'on'
+    };
+    try { const data = await fetchJson(`${API_URL}/v1/admin/alert-settings`, { method: 'PUT', body: JSON.stringify(settings) }); setAlertSettings(data.settings); setRulesMessage('Workforce rules saved successfully.'); }
+    catch (error: any) { setRulesMessage(error.message === 'INVALID_ALERT_SETTINGS' ? 'Check the rule values and try again.' : 'Unable to save workforce rules. Please try again.'); }
+  };
 
   const toggleOvertime = () => {
     setIncludeOvertime(current => {
@@ -197,10 +214,10 @@ function App() {
 
   if (!token) return <main className="loginShell"><section className="loginCard"><span className="eyebrow">ATTENDRA HQ</span><h1>Manager sign in</h1><p>Secure access to workforce attendance and employee management.</p><form onSubmit={login} className="loginForm"><label>Email<input name="email" type="email" autoComplete="username" required /></label><label>Password<input name="password" type="password" autoComplete="current-password" minLength={8} required /></label>{loginError && <div className="errorBox">{loginError}</div>}<button type="submit" className="primary">Sign in</button></form></section></main>;
 
-  const title = activeTab === 'overview' ? 'Workforce overview' : activeTab === 'employees' ? 'Employees' : activeTab === 'branches' ? 'Branches' : activeTab === 'devices' ? 'Devices' : activeTab === 'shifts' ? 'Shifts' : 'Timekeeping';
+  const title = activeTab === 'overview' ? 'Workforce overview' : activeTab === 'employees' ? 'Employees' : activeTab === 'branches' ? 'Branches' : activeTab === 'devices' ? 'Devices' : activeTab === 'shifts' ? 'Shifts' : activeTab === 'timekeeping' ? 'Timekeeping' : 'Workforce rules';
   return <main className="shell">
     <header><div><span className="eyebrow">ATTENDRA HQ</span><h1>{title}</h1></div><div className="headerActions"><span className={`badge ${connected ? 'online' : ''}`}>{connected ? 'Live' : 'Connecting'}</span><button className="linkButton" onClick={logout}>Sign out</button></div></header>
-    <nav className="tabs"><button className={activeTab === 'overview' ? 'active' : ''} onClick={() => setActiveTab('overview')}>Overview</button><button className={activeTab === 'employees' ? 'active' : ''} onClick={() => { setActiveTab('employees'); loadEmployees(); }}>Employees</button><button className={activeTab === 'branches' ? 'active' : ''} onClick={() => { setActiveTab('branches'); loadBranches(); }}>Branches</button><button className={activeTab === 'devices' ? 'active' : ''} onClick={() => { setActiveTab('devices'); loadDevices(); loadBranches(); }}>Devices</button><button className={activeTab === 'shifts' ? 'active' : ''} onClick={() => { setActiveTab('shifts'); loadShifts(); loadEmployees(); loadBranches(); }}>Shifts</button><button className={activeTab === 'timekeeping' ? 'active' : ''} onClick={() => { setActiveTab('timekeeping'); setTimeout(loadTimeReport,0); }}>Time</button><span className="adminIdentity">{adminEmail}</span></nav>
+    <nav className="tabs"><button className={activeTab === 'overview' ? 'active' : ''} onClick={() => setActiveTab('overview')}>Overview</button><button className={activeTab === 'employees' ? 'active' : ''} onClick={() => { setActiveTab('employees'); loadEmployees(); }}>Employees</button><button className={activeTab === 'branches' ? 'active' : ''} onClick={() => { setActiveTab('branches'); loadBranches(); }}>Branches</button><button className={activeTab === 'devices' ? 'active' : ''} onClick={() => { setActiveTab('devices'); loadDevices(); loadBranches(); }}>Devices</button><button className={activeTab === 'shifts' ? 'active' : ''} onClick={() => { setActiveTab('shifts'); loadShifts(); loadEmployees(); loadBranches(); }}>Shifts</button><button className={activeTab === 'timekeeping' ? 'active' : ''} onClick={() => { setActiveTab('timekeeping'); setTimeout(loadTimeReport,0); }}>Time</button><button className={activeTab === 'rules' ? 'active' : ''} onClick={() => { setActiveTab('rules'); loadAlertSettings(); }}>Rules</button><span className="adminIdentity">{adminEmail}</span></nav>
 
     {activeTab === 'overview' && <><section className="grid"><article><strong>{summary.checkedInNow}</strong><span>Checked in now</span></article><article><strong>{summary.lateToday}</strong><span>Late today</span></article><article><strong>{summary.absent}</strong><span>Absent</span></article><article><strong>{summary.offlineDevices}</strong><span>Offline devices</span></article></section><section className="panel"><div className="panelHead"><h2>Live attendance</h2><span>Refreshes every 5 seconds</span></div>{events.length === 0 ? <p className="empty">No attendance events yet.</p> : <div className="attendanceList">{events.map(event => <div className="attendanceRow" key={event.id}><div><strong>{event.employeeName}</strong><span>{event.employeeNumber} · {event.branchName}</span></div><div className="eventMeta"><b className={event.status.toLowerCase()}>{event.status.replace('_', ' ')}</b><span>{event.action === 'CHECK_IN' ? 'Checked in' : 'Checked out'} · {new Date(event.occurredAt).toLocaleString()}</span></div></div>)}</div>}</section></>}
 
@@ -226,6 +243,19 @@ function App() {
       </section>
       {selectedTimeEmployee&&<section className="panel timesheetPanel"><div className="panelHead"><div><h2>Daily timesheet</h2><span>{selectedEmployeeRow?`${selectedEmployeeRow.employeeName} · #${selectedEmployeeRow.employeeNumber}`:'Employee detail'}</span></div><div className="rowActions"><button onClick={()=>setSelectedTimeEmployee('')}>Close</button></div></div>{selectedEntries.length===0?<p className="empty">No daily entries for this employee in the selected period.</p>:<div className="timesheetList">{selectedEntries.map(entry=><article className={`timesheetEntry ${entry.needsReview?'needsReview':''}`} key={entry.entryId}><div className="timesheetTop"><div><strong>{new Date(`${entry.date}T12:00:00`).toLocaleDateString()} · {entry.branchName}</strong><span className={`statusChip status-${entry.status.toLowerCase()}`}>{entry.status.replace('_',' ')}</span></div>{entry.needsReview&&<b>Review required</b>}</div><div className="timesheetMetrics"><span><small>Scheduled</small>{entry.scheduledStart&&entry.scheduledEnd?`${new Date(entry.scheduledStart).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'})}–${new Date(entry.scheduledEnd).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'})}`:'Unscheduled'}</span><span><small>Check in</small>{entry.checkInAt?new Date(entry.checkInAt).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'}):'—'}</span><span><small>Check out</small>{entry.checkOutAt?new Date(entry.checkOutAt).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'}):'—'}</span><span><small>Worked</small>{minutesLabel(entry.workedMinutes)}</span></div><p className="timesheetNote">Scheduled {minutesLabel(entry.scheduledMinutes)} · Break {entry.breakMinutes}m · Late {entry.lateMinutes}m · Early leave {entry.earlyLeaveMinutes}m · Overtime {includeOvertime?minutesLabel(entry.overtimeMinutes):'excluded'}</p>{entry.shiftId===null?<div className="rowActions"><button className="dangerAction" onClick={()=>removeUnscheduledAttendance(entry)}>Remove unscheduled record</button></div>:entry.status==='OPEN'?<div className="rowActions"><button className="correctionAction" onClick={()=>fixMissingCheckout(entry)}>Fix missing checkout</button></div>:null}</article>)}</div>}</section>}
     </>}
+    {activeTab === 'rules' && <section className="panel"><div className="panelHead"><div><h2>Attendance & alert rules</h2><span>Company-wide thresholds used to identify workforce exceptions.</span></div></div>
+      <form onSubmit={saveAlertSettings} className="employeeForm">
+        <label>Late after (minutes)<input name="lateAfterMinutes" type="number" min="0" max="180" value={alertSettings.lateAfterMinutes} onChange={e=>setAlertSettings({...alertSettings,lateAfterMinutes:Number(e.target.value)})} required /></label>
+        <label>Missed shift after (minutes)<input name="missedShiftAfterMinutes" type="number" min="1" max="180" value={alertSettings.missedShiftAfterMinutes} onChange={e=>setAlertSettings({...alertSettings,missedShiftAfterMinutes:Number(e.target.value)})} required /></label>
+        <label>Missing checkout after (minutes)<input name="missingCheckoutAfterMinutes" type="number" min="1" max="240" value={alertSettings.missingCheckoutAfterMinutes} onChange={e=>setAlertSettings({...alertSettings,missingCheckoutAfterMinutes:Number(e.target.value)})} required /></label>
+        <label>Tablet offline after (minutes)<input name="tabletOfflineAfterMinutes" type="number" min="1" max="60" value={alertSettings.tabletOfflineAfterMinutes} onChange={e=>setAlertSettings({...alertSettings,tabletOfflineAfterMinutes:Number(e.target.value)})} required /></label>
+        <label className="checkLabel"><input name="notifyHighPriority" type="checkbox" checked={alertSettings.notifyHighPriority} onChange={e=>setAlertSettings({...alertSettings,notifyHighPriority:e.target.checked})} /> High-priority alerts</label>
+        <label className="checkLabel"><input name="notifyMediumPriority" type="checkbox" checked={alertSettings.notifyMediumPriority} onChange={e=>setAlertSettings({...alertSettings,notifyMediumPriority:e.target.checked})} /> Medium-priority alerts</label>
+        <button className="primary" type="submit">Save workforce rules</button>
+      </form>
+      {rulesMessage && <div className="infoBox">{rulesMessage}</div>}
+      <div className="infoBox">These settings are isolated to this company. Changes are recorded in the Attendra audit log.</div>
+    </section>}
   </main>;
 }
 
