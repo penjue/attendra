@@ -65,7 +65,7 @@ const configFromUrl = (): TabletConfig | null => {
 };
 
 function App() {
-  const [config, setConfig] = useState<TabletConfig | null>(() => readStoredConfig() ?? legacyConfig());
+  const [config, setConfig] = useState<TabletConfig | null>(() => configFromUrl() ?? readStoredConfig() ?? legacyConfig());
   const [employee, setEmployee] = useState('');
   const [pin, setPin] = useState('');
   const [busy, setBusy] = useState(false);
@@ -77,7 +77,6 @@ function App() {
     const incoming = configFromUrl();
     if (!incoming) return;
     localStorage.setItem(STORAGE_KEY, JSON.stringify(incoming));
-    setConfig(incoming);
     window.history.replaceState({}, document.title, window.location.pathname);
   }, []);
 
