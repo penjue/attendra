@@ -183,7 +183,7 @@ function App() {
     setDeviceMessage(''); setActivationLink(null);
     try {
       const data = await fetchJson(`${API_URL}/v1/admin/devices/${device.id}/reset-key`, { method: 'POST', body: '{}' });
-      const params = new URLSearchParams({ companyId: COMPANY_ID, branchId: device.branchId, deviceId: device.id, branchName: device.branchName, deviceName: device.name, deviceKey: data.deviceKey });
+      const params = new URLSearchParams({ companyId: data.device.companyId, branchId: data.device.branchId, deviceId: device.id, branchName: device.branchName, deviceName: device.name, deviceKey: data.deviceKey });
       const tabletUrl = env.VITE_TABLET_URL ?? 'https://attendra-tablet.onrender.com';
       setActivationLink({ deviceId: device.id, deviceName: device.name, url: `${tabletUrl}/?${params.toString()}` });
       setDeviceMessage('Secure tablet activation link generated. A new link invalidates the previous device key.');
