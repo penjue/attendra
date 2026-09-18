@@ -66,6 +66,21 @@ CREATE TABLE IF NOT EXISTS devices (
   created_at timestamptz NOT NULL DEFAULT now()
 );
 
+CREATE TABLE IF NOT EXISTS device_activation_tokens (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  device_id uuid NOT NULL REFERENCES devices(id) ON DELETE CASCADE,
+  company_id uuid NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+  branch_id uuid NOT NULL REFERENCES branches(id) ON DELETE CASCADE,
+  token_hash text NOT NULL UNIQUE,
+  expires_at timestamptz NOT NULL,
+  used_at timestamptz,
+  created_by text,
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS idx_device_activation_tokens_device ON device_activation_tokens(device_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_device_activation_tokens_expiry ON device_activation_tokens(expires_at) WHERE used_at IS NULL;
+
 CREATE TABLE IF NOT EXISTS shifts (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   company_id uuid NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
