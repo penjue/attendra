@@ -65,7 +65,9 @@ const configFromUrl = (): TabletConfig | null => {
 };
 
 function App() {
-  const [config, setConfig] = useState<TabletConfig | null>(() => configFromUrl() ?? readStoredConfig() ?? legacyConfig());
+  const [config, setConfig] = useState<TabletConfig | null>(() => readStoredConfig() ?? legacyConfig());
+  const [activationPending, setActivationPending] = useState(() => Boolean(new URLSearchParams(window.location.search).get('activationToken')));
+  const [activationError, setActivationError] = useState('');
   const [employee, setEmployee] = useState('');
   const [pin, setPin] = useState('');
   const [busy, setBusy] = useState(false);
@@ -75,10 +77,23 @@ function App() {
   const [pendingSync, setPendingSync] = useState(0);
 
   useEffect(() => {
-    const incoming = configFromUrl();
-    if (!incoming) return;
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(incoming));
+    const token = new URLSearchParams(window.location.search).get('activationToken')?.trim();
+    if (!token) return;
     window.history.replaceState({}, document.title, window.location.pathname);
+    const activate = async () => {
+      try {
+        const response = await fetch(`${API_URL}/v1/devices/activate`, { method:'POST', headers:{'content-type':'application/json'}, body:JSON.stringify({activationToken:token}) });
+        const data = await response.json().catch(() => ({}));
+        if (!response.ok || !data.config) throw new Error(data.error === 'ACTIVATION_TOKEN_EXPIRED_OR_USED' ? 'This activation has expired or has already been used. Ask your manager to generate a new QR code.' : 'Tablet activation failed. Please ask your manager to try again.');
+        localStorage.setItem(STORAGE_KEY, JSON.stringify(data.config));
+        setConfig(data.config);
+      } catch (error) {
+        setActivationError(error instanceof Error ? error.message : 'Tablet activation failed.');
+      } finally {
+        setActivationPending(false);
+      }
+    };
+    void activate();
   }, []);
 
   const configured = Boolean(config?.companyId && config?.branchId && config?.deviceId);
@@ -233,6 +248,10 @@ function App() {
     setMessage(null);
   };
 
+  if (activationPending) {
+    return <main className="kiosk"><div className="brand">Attendra</div><p className="branch">Secure tablet activation</p><section className="card"><h1>Activating tablet…</h1><p>Attendra is securely registering this device. Please keep this page open.</p></section></main>;
+  }
+
   if (!configured || !config) {
     return <main className="kiosk">
       <div className="brand">Attendra</div>
@@ -240,7 +259,7 @@ function App() {
       <section className="card">
         <h1>Set up this tablet</h1>
         <p>This device has not been assigned to a company branch yet.</p>
-        <div className="notice error">Ask your company administrator to open Devices in Attendra HQ and generate a tablet activation link.</div>
+        {activationError && <div className="notice error">{activationError}</div>}<div className="notice error">Ask your company administrator to open Devices in Attendra HQ and generate a tablet activation QR code or link.</div>
         <p>Open that activation link on this tablet. Attendra will then remember the company, branch and tablet automatically.</p>
       </section>
     </main>;
