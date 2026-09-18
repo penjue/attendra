@@ -103,6 +103,7 @@ function App() {
   const loadBranches = async () => { if (!token) return; try { const data = await fetchJson(`${API_URL}/v1/admin/branches`); setBranches(data.branches); } catch (error: any) { setBranchMessage(error.message); } };
   const loadDevices = async () => { if (!token) return; try { const data = await fetchJson(`${API_URL}/v1/admin/devices`); setDevices(data.devices); } catch (error: any) { setDeviceMessage(error.message); } };
   const loadShifts = async () => { if (!token) return; try { const data = await fetchJson(`${API_URL}/v1/admin/shifts`); setShifts(data.shifts); } catch { setShiftMessage('Unable to refresh the shift schedule. Please try again.'); } };
+  const loadAlertSettings = async () => { if (!token) return; setRulesMessage(''); try { const data = await fetchJson(`${API_URL}/v1/admin/alert-settings`); setAlertSettings(data.settings); } catch { setRulesMessage('Unable to load workforce rules. Please try again.'); } };
   const loadTimeReport = async () => {
     if (!token) return;
     setTimeMessage('');
