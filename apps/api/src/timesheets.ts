@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { z } from 'zod';
 import { db } from './db.js';
 
@@ -74,9 +75,10 @@ export const registerTimesheetRoutes=(app:any,requireAdmin:RequireAdmin)=>{
   });
 
   app.post('/v1/devices/heartbeat',async(request:any,reply:any)=>{
-    const p=z.object({companyId:z.uuid(),branchId:z.uuid(),deviceId:z.uuid()}).safeParse(request.body);
+    const p=z.object({companyId:z.uuid(),branchId:z.uuid(),deviceId:z.uuid(),deviceKey:z.string().min(1)}).safeParse(request.body);
     if(!p.success)return reply.code(400).send({ok:false,error:'INVALID_HEARTBEAT'});
-    const r=await db.query(`update devices set last_seen_at=now() where id=$1 and company_id=$2 and branch_id=$3 and active=true returning id,last_seen_at as "lastSeenAt"`,[p.data.deviceId,p.data.companyId,p.data.branchId]);
+    const keyHash=createHash('sha256').update(p.data.deviceKey).digest('hex');
+    const r=await db.query(`update devices set last_seen_at=now() where id=$1 and company_id=$2 and branch_id=$3 and active=true and device_key_hash=$4 returning id,last_seen_at as "lastSeenAt"`,[p.data.deviceId,p.data.companyId,p.data.branchId,keyHash]);
     if(!r.rowCount)return reply.code(403).send({ok:false,error:'DEVICE_NOT_AUTHORISED'});
     return{ok:true,device:r.rows[0]};
   });
