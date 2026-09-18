@@ -72,6 +72,7 @@ function App() {
   const [message, setMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
   const [heartbeatStatus, setHeartbeatStatus] = useState<{ ok: boolean; text: string; at?: string }>({ ok: false, text: 'Waiting for heartbeat…' });
   const [showTabletSettings, setShowTabletSettings] = useState(false);
+  const [pendingSync, setPendingSync] = useState(0);
 
   useEffect(() => {
     const incoming = configFromUrl();
@@ -118,6 +119,31 @@ function App() {
     };
   }, [configured, config]);
 
+  const QUEUE_KEY = 'attendra-offline-attendance-v1';
+  const readQueue = () => { try { return JSON.parse(localStorage.getItem(QUEUE_KEY) ?? '[]') as any[]; } catch { return []; } };
+  const writeQueue = (items: any[]) => { localStorage.setItem(QUEUE_KEY, JSON.stringify(items)); setPendingSync(items.length); };
+  const syncQueue = async () => {
+    if (!config || !navigator.onLine) return;
+    const queued = readQueue(); if (!queued.length) { setPendingSync(0); return; }
+    const remaining:any[] = [];
+    for (const item of queued) {
+      try {
+        const response = await fetch(`${API_URL}/v1/attendance/events`, { method:'POST', headers:{'content-type':'application/json'}, body:JSON.stringify(item) });
+        if (!response.ok) remaining.push(item);
+      } catch { remaining.push(item); }
+    }
+    writeQueue(remaining);
+  };
+
+  useEffect(() => {
+    setPendingSync(readQueue().length);
+    const onOnline = () => { void syncQueue(); };
+    window.addEventListener('online', onOnline);
+    const timer = window.setInterval(() => { void syncQueue(); }, 30000);
+    void syncQueue();
+    return () => { window.removeEventListener('online', onOnline); window.clearInterval(timer); };
+  }, [config?.deviceId, config?.deviceKey]);
+
   const submit = async (action: 'CHECK_IN' | 'CHECK_OUT') => {
     if (!config || !configured || !employee || pin.length < 4 || busy) return;
     setBusy(true);
@@ -125,6 +151,7 @@ function App() {
 
     try {
       const occurredAt = new Date().toISOString();
+      const clientEventId = crypto.randomUUID();
       const eligibility = await fetch(`${API_URL}/v1/attendance/eligibility`, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
@@ -134,7 +161,9 @@ function App() {
           employeeNumber: employee.trim(),
           pin,
           action,
-          occurredAt
+          occurredAt,
+          clientEventId,
+          deviceKey: config.deviceKey
         })
       });
       const eligibilityData = await eligibility.json();
@@ -183,7 +212,15 @@ function App() {
       setEmployee('');
       setPin('');
     } catch (error) {
-      setMessage({ type: 'error', text: error instanceof Error ? error.message : 'Unable to record attendance.' });
+      const networkFailure = !navigator.onLine || (error instanceof TypeError);
+      if (networkFailure && config) {
+        const queued = readQueue();
+        queued.push({ companyId:config.companyId, branchId:config.branchId, deviceId:config.deviceId, deviceKey:config.deviceKey, employeeNumber:employee.trim(), pin, action, occurredAt:new Date().toISOString(), clientEventId:crypto.randomUUID() });
+        writeQueue(queued);
+        setMessage({ type:'success', text:'Internet unavailable. Attendance saved securely on this tablet and will sync automatically when the connection returns.' });
+      } else {
+        setMessage({ type: 'error', text: error instanceof Error ? error.message : 'Unable to record attendance.' });
+      }
     } finally {
       setBusy(false);
     }
@@ -225,6 +262,7 @@ function App() {
       <button className="secondary" style={{marginTop: 16, width: '100%'}} onClick={()=>setShowTabletSettings(value=>!value)}>Tablet settings</button>
       {showTabletSettings && <div className={`notice ${heartbeatStatus.ok ? 'success' : 'error'}`} style={{marginTop: 12}}>
         <strong>Connection status</strong>
+        <p><strong>Pending attendance sync: {pendingSync}</strong></p>
         <p>{heartbeatStatus.text}</p>
         {heartbeatStatus.at && <small>Last heartbeat attempt: {new Date(heartbeatStatus.at).toLocaleString()}</small>}
         <p><small>Device: {config.deviceName ?? config.deviceId}</small></p>
