@@ -70,6 +70,8 @@ function App() {
   const [pin, setPin] = useState('');
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
+  const [heartbeatStatus, setHeartbeatStatus] = useState<{ ok: boolean; text: string; at?: string }>({ ok: false, text: 'Waiting for heartbeat…' });
+  const [showTabletSettings, setShowTabletSettings] = useState(false);
 
   useEffect(() => {
     const incoming = configFromUrl();
@@ -85,7 +87,7 @@ function App() {
     if (!configured || !config) return;
     const heartbeat = async () => {
       try {
-        await fetch(`${API_URL}/v1/devices/heartbeat`, {
+        const response = await fetch(`${API_URL}/v1/devices/heartbeat`, {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
           body: JSON.stringify({
@@ -95,8 +97,14 @@ function App() {
             deviceKey: config.deviceKey
           })
         });
-      } catch {
-        // Attendance remains available even if a heartbeat temporarily fails.
+        const data = await response.json().catch(() => ({}));
+        if (!response.ok) {
+          setHeartbeatStatus({ ok: false, text: `Heartbeat failed: ${data.error ?? `HTTP ${response.status}`}`, at: new Date().toISOString() });
+          return;
+        }
+        setHeartbeatStatus({ ok: true, text: 'Connected to Attendra HQ', at: data.device?.lastSeenAt ?? new Date().toISOString() });
+      } catch (error) {
+        setHeartbeatStatus({ ok: false, text: `Heartbeat network error: ${error instanceof Error ? error.message : 'Unable to reach API'}`, at: new Date().toISOString() });
       }
     };
     heartbeat();
@@ -215,7 +223,14 @@ function App() {
         <button onClick={()=>submit('CHECK_OUT')} className="secondary" disabled={!employee||pin.length<4||busy}>Check out</button>
       </div>
       <small>Your PIN is verified securely and is never stored in the attendance record.</small>
-      <button className="secondary" style={{marginTop: 16, width: '100%'}} onClick={resetTablet}>Tablet settings</button>
+      <button className="secondary" style={{marginTop: 16, width: '100%'}} onClick={()=>setShowTabletSettings(value=>!value)}>Tablet settings</button>
+      {showTabletSettings && <div className={`notice ${heartbeatStatus.ok ? 'success' : 'error'}`} style={{marginTop: 12}}>
+        <strong>Connection status</strong>
+        <p>{heartbeatStatus.text}</p>
+        {heartbeatStatus.at && <small>Last heartbeat attempt: {new Date(heartbeatStatus.at).toLocaleString()}</small>}
+        <p><small>Device: {config.deviceName ?? config.deviceId}</small></p>
+        <button className="secondary" style={{width: '100%'}} onClick={resetTablet}>Remove tablet registration</button>
+      </div>}
     </section>
   </main>;
 }
