@@ -89,8 +89,12 @@ CREATE TABLE IF NOT EXISTS attendance_events (
   status attendance_status NOT NULL DEFAULT 'UNSCHEDULED',
   occurred_at timestamptz NOT NULL,
   received_at timestamptz NOT NULL DEFAULT now(),
-  source text NOT NULL DEFAULT 'TABLET'
+  source text NOT NULL DEFAULT 'TABLET',
+  client_event_id uuid
 );
+
+ALTER TABLE attendance_events ADD COLUMN IF NOT EXISTS client_event_id uuid;
+CREATE UNIQUE INDEX IF NOT EXISTS attendance_events_device_client_event_uidx ON attendance_events(device_id, client_event_id) WHERE client_event_id IS NOT NULL;
 
 ALTER TABLE attendance_events ALTER COLUMN device_id DROP NOT NULL;
 
