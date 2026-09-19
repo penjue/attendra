@@ -4,13 +4,12 @@ import { createHash, randomBytes } from 'node:crypto';
 import { z } from 'zod';
 import { db, pingDatabase } from './db.js';
 import { registerTimesheetRoutes } from './timesheets.js';
-import { bootstrapLegacyAdmin, loginCompanyAdmin, requireAdmin } from './admin-auth.js';
+import { loginCompanyAdmin, requireAdmin } from './admin-auth.js';
 
 const app = Fastify({ logger: true });
 const allowedOrigins = (process.env.CORS_ORIGIN ?? '').split(',').map(value => value.trim()).filter(Boolean);
 await app.register(cors, { origin: allowedOrigins.length ? allowedOrigins : true });
 
-await bootstrapLegacyAdmin();
 
 app.get('/health',async(_request,reply)=>{try{return{ok:true,service:'attendra-api',version:'0.9.0',database:'connected',databaseTime:await pingDatabase(),time:new Date().toISOString()}}catch(error){app.log.error(error);return reply.code(503).send({ok:false,service:'attendra-api',database:'unavailable',time:new Date().toISOString()})}});
 app.post('/v1/admin/login',async(request,reply)=>{try{const result=await loginCompanyAdmin(request.body);return reply.code(result.status).send(result.body)}catch(error){app.log.error(error);return reply.code(500).send({ok:false,error:'ADMIN_LOGIN_FAILED'})}});
