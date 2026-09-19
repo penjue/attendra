@@ -7,8 +7,20 @@ import { registerTimesheetRoutes } from './timesheets.js';
 import { loginCompanyAdmin, requireAdmin } from './admin-auth.js';
 
 const app = Fastify({ logger: true });
+
+const syncAdminPasswordOnce = async () => {
+  const email=(process.env.ADMIN_EMAIL??'').trim().toLowerCase();
+  const password=process.env.ADMIN_PASSWORD??'';
+  const companyId=process.env.ADMIN_COMPANY_ID??'';
+  if(!email||!password||!companyId)return;
+  const r=await db.query(`update company_admins set password_hash=crypt($1,gen_salt('bf')) where company_id=$2 and lower(email)=lower($3) and active=true returning id`,[password,companyId,email]);
+  if(r.rowCount) app.log.warn({adminId:r.rows[0].id},'One-time admin database password synchronization executed');
+};
+
 const allowedOrigins = (process.env.CORS_ORIGIN ?? '').split(',').map(value => value.trim()).filter(Boolean);
 await app.register(cors, { origin: allowedOrigins.length ? allowedOrigins : true });
+
+await syncAdminPasswordOnce();
 
 
 app.get('/health',async(_request,reply)=>{try{return{ok:true,service:'attendra-api',version:'0.9.0',database:'connected',databaseTime:await pingDatabase(),time:new Date().toISOString()}}catch(error){app.log.error(error);return reply.code(503).send({ok:false,service:'attendra-api',database:'unavailable',time:new Date().toISOString()})}});
