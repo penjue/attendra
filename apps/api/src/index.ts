@@ -14,7 +14,38 @@ await app.register(cors, { origin: allowedOrigins.length ? allowedOrigins : true
 
 
 app.get('/health',async(_request,reply)=>{try{return{ok:true,service:'attendra-api',version:'0.9.0',database:'connected',databaseTime:await pingDatabase(),time:new Date().toISOString()}}catch(error){app.log.error(error);return reply.code(503).send({ok:false,service:'attendra-api',database:'unavailable',time:new Date().toISOString()})}});
-app.post('/v1/admin/login',async(request,reply)=>{try{const result=await loginCompanyAdmin(request.body);return reply.code(result.status).send(result.body)}catch(error){app.log.error(error);return reply.code(500).send({ok:false,error:'ADMIN_LOGIN_FAILED'})}});
+const adminLoginAttempts = new Map<string,{count:number;windowStartedAt:number;blockedUntil:number}>();
+const ADMIN_LOGIN_WINDOW_MS=15*60*1000;
+const ADMIN_LOGIN_MAX_ATTEMPTS=5;
+const ADMIN_LOGIN_BLOCK_MS=15*60*1000;
+const adminLoginKey=(request:any)=>String(request.ip||'unknown');
+const checkAdminLoginRateLimit=(request:any)=>{
+  const key=adminLoginKey(request),now=Date.now(),current=adminLoginAttempts.get(key);
+  if(!current)return {allowed:true,key};
+  if(current.blockedUntil>now)return {allowed:false,key,retryAfterSeconds:Math.ceil((current.blockedUntil-now)/1000)};
+  if(now-current.windowStartedAt>=ADMIN_LOGIN_WINDOW_MS){adminLoginAttempts.delete(key);return {allowed:true,key}}
+  return {allowed:true,key};
+};
+const recordFailedAdminLogin=(key:string)=>{
+  const now=Date.now(),current=adminLoginAttempts.get(key);
+  const state=!current||now-current.windowStartedAt>=ADMIN_LOGIN_WINDOW_MS?{count:0,windowStartedAt:now,blockedUntil:0}:current;
+  state.count+=1;
+  if(state.count>=ADMIN_LOGIN_MAX_ATTEMPTS)state.blockedUntil=now+ADMIN_LOGIN_BLOCK_MS;
+  adminLoginAttempts.set(key,state);
+};
+app.post('/v1/admin/login',async(request,reply)=>{
+  const rate=checkAdminLoginRateLimit(request);
+  if(!rate.allowed){
+    reply.header('Retry-After',String(rate.retryAfterSeconds??900));
+    return reply.code(429).send({ok:false,error:'TOO_MANY_LOGIN_ATTEMPTS'});
+  }
+  try{
+    const result=await loginCompanyAdmin(request.body);
+    if(result.status===401)recordFailedAdminLogin(rate.key);
+    else if(result.status===200)adminLoginAttempts.delete(rate.key);
+    return reply.code(result.status).send(result.body);
+  }catch(error){app.log.error(error);return reply.code(500).send({ok:false,error:'ADMIN_LOGIN_FAILED'})}
+});
 
 const attendanceSchema=z.object({companyId:z.uuid(),branchId:z.uuid(),deviceId:z.uuid(),employeeNumber:z.string().trim().min(1).max(64),pin:z.string().regex(/^\d{4,12}$/),action:z.enum(['CHECK_IN','CHECK_OUT']),occurredAt:z.iso.datetime().optional(),clientEventId:z.uuid().optional(),deviceKey:z.string().min(1).optional()});
 app.post('/v1/attendance/events',async(request,reply)=>{const p=attendanceSchema.safeParse(request.body);if(!p.success)return reply.code(400).send({ok:false,error:'INVALID_REQUEST',details:p.error.flatten()});const i=p.data,o=i.occurredAt?new Date(i.occurredAt):new Date(),c=await db.connect();try{await c.query('BEGIN');const d=await c.query('select id,device_key_hash from devices where id=$1 and company_id=$2 and branch_id=$3 and active=true for update',[i.deviceId,i.companyId,i.branchId]);if(!d.rowCount||!i.deviceKey||createHash('sha256').update(i.deviceKey).digest('hex')!==d.rows[0].device_key_hash){await c.query('ROLLBACK');return reply.code(403).send({ok:false,error:'DEVICE_NOT_AUTHORISED'})}if(i.clientEventId){const existing=await c.query(`select ae.id,ae.action,ae.status,ae.occurred_at,ae.received_at,e.id as employee_id,e.employee_number,e.first_name,e.last_name from attendance_events ae join employees e on e.id=ae.employee_id where ae.device_id=$1 and ae.client_event_id=$2 limit 1`,[i.deviceId,i.clientEventId]);if(existing.rowCount){await c.query('ROLLBACK');const x=existing.rows[0];return reply.code(200).send({ok:true,duplicate:true,employee:{id:x.employee_id,employeeNumber:x.employee_number,name:`${x.first_name} ${x.last_name}`},event:{id:x.id,action:x.action,status:x.status,occurred_at:x.occurred_at,received_at:x.received_at}})}}const er=await c.query(`select id,first_name,last_name from employees where company_id=$1 and employee_number=$2 and active=true and pin_hash=crypt($3,pin_hash) limit 1`,[i.companyId,i.employeeNumber,i.pin]);if(!er.rowCount){await c.query('ROLLBACK');return reply.code(401).send({ok:false,error:'INVALID_EMPLOYEE_OR_PIN'})}const e=er.rows[0];const sr=await c.query(`select id,starts_at,ends_at from shifts where company_id=$1 and branch_id=$2 and employee_id=$3 and $4::timestamptz between starts_at-interval '4 hours' and ends_at+interval '4 hours' order by abs(extract(epoch from(starts_at-$4::timestamptz))) limit 1`,[i.companyId,i.branchId,e.id,o.toISOString()]);const s=sr.rows[0]??null;let status:'ON_TIME'|'LATE'|'EARLY'|'UNSCHEDULED'='UNSCHEDULED';if(s&&i.action==='CHECK_IN'){const st=new Date(s.starts_at).getTime(),t=o.getTime(),g=300000;status=t>st+g?'LATE':t<st-g?'EARLY':'ON_TIME'}else if(s)status='ON_TIME';const ir=await c.query(`insert into attendance_events(company_id,branch_id,device_id,employee_id,shift_id,action,status,occurred_at,client_event_id) values($1,$2,$3,$4,$5,$6,$7,$8,$9) returning id,action,status,occurred_at,received_at`,[i.companyId,i.branchId,i.deviceId,e.id,s?.id??null,i.action,status,o.toISOString(),i.clientEventId??null]);await c.query('update devices set last_seen_at=now() where id=$1',[i.deviceId]);await c.query(`insert into audit_log(company_id,actor_type,actor_id,action,entity_type,entity_id,metadata) values($1,'DEVICE',$2,$3,'ATTENDANCE_EVENT',$4,jsonb_build_object('employeeId',$5::uuid,'branchId',$6::uuid))`,[i.companyId,i.deviceId,i.action,ir.rows[0].id,e.id,i.branchId]);await c.query('COMMIT');return reply.code(201).send({ok:true,employee:{id:e.id,employeeNumber:i.employeeNumber,name:`${e.first_name} ${e.last_name}`},event:ir.rows[0]})}catch(error){await c.query('ROLLBACK');app.log.error(error);return reply.code(500).send({ok:false,error:'ATTENDANCE_WRITE_FAILED'})}finally{c.release()}});
