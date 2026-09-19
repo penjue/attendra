@@ -1,4 +1,4 @@
-import { createHash, createHmac, timingSafeEqual } from 'node:crypto';
+import { createHmac, timingSafeEqual } from 'node:crypto';
 import { z } from 'zod';
 import { db } from './db.js';
 
@@ -6,9 +6,9 @@ export type AdminToken = { adminId?: string; email: string; companyId: string; r
 
 const secret = () => process.env.ADMIN_TOKEN_SECRET ?? '';
 const safeEqual = (a:string,b:string) => {
-  const l=createHash('sha256').update(a).digest();
-  const r=createHash('sha256').update(b).digest();
-  return timingSafeEqual(l,r);
+  const l=Buffer.from(a);
+  const r=Buffer.from(b);
+  return l.length===r.length&&timingSafeEqual(l,r);
 };
 export const signAdminToken=(p:AdminToken)=>{
   const b=Buffer.from(JSON.stringify(p)).toString('base64url');
@@ -48,18 +48,5 @@ export async function loginCompanyAdmin(body:unknown){
   const r=await db.query(`select ca.id,ca.company_id as "companyId",ca.email,ca.role,c.name as "companyName" from company_admins ca join companies c on c.id=ca.company_id where lower(ca.email)=lower($1) and ca.active=true and ca.password_hash=crypt($2,ca.password_hash) limit 1`,[email,parsed.data.password]);
   if(r.rowCount)return successfulLogin(r.rows[0]);
 
-  const legacyEmail=(process.env.ADMIN_EMAIL??'').trim().toLowerCase();
-  const legacyPassword=process.env.ADMIN_PASSWORD??'';
-  const legacyCompanyId=process.env.ADMIN_COMPANY_ID??'';
-  if(secret()&&legacyEmail&&legacyPassword&&legacyCompanyId&&safeEqual(email,legacyEmail)&&safeEqual(parsed.data.password,legacyPassword)){
-    const company=await db.query('select name from companies where id=$1 limit 1',[legacyCompanyId]);
-    if(company.rowCount)return successfulLogin({email:legacyEmail,companyId:legacyCompanyId,role:'OWNER',companyName:company.rows[0].name});
-  }
   return {status:401,body:{ok:false,error:'INVALID_ADMIN_CREDENTIALS'}};
-}
-
-export async function bootstrapLegacyAdmin(){
-  const email=(process.env.ADMIN_EMAIL??'').trim().toLowerCase(),password=process.env.ADMIN_PASSWORD??'',companyId=process.env.ADMIN_COMPANY_ID??'';
-  if(!email||!password||!companyId)return;
-  await db.query(`insert into company_admins(company_id,email,password_hash,role) select $1,$2,crypt($3,gen_salt('bf')),'OWNER' where exists(select 1 from companies where id=$1) and not exists(select 1 from company_admins where lower(email)=lower($2))`,[companyId,email,password]);
 }
