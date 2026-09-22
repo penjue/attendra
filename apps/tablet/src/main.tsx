@@ -270,6 +270,7 @@ function App() {
     <p className="branch">{config.branchName} · Registered tablet</p>
     <section className="card">
       <h1>Welcome</h1><p>Enter your employee number and PIN.</p>
+      {activationError && <div className="notice error" role="alert">{activationError} This tablet remains registered to {config.branchName}.</div>}
       {message && <div className={`notice ${message.type}`}>{message.text}</div>}
       <label>Employee number<input autoComplete="off" value={employee} onChange={e=>setEmployee(e.target.value)} placeholder="e.g. 1042" /></label>
       <label>PIN<input type="password" inputMode="numeric" autoComplete="off" value={pin} onChange={e=>setPin(e.target.value.replace(/\D/g, '').slice(0, 12))} placeholder="••••" /></label>
