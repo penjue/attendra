@@ -59,11 +59,11 @@
   async function generate(device){
     try{
       showStatus(`Generating activation for ${device.name}…`);
-      const data=await api(`/v1/admin/devices/${encodeURIComponent(device.id)}/reset-key`,{method:'POST',body:'{}'});
-      const params=new URLSearchParams({companyId,branchId:device.branchId,deviceId:device.id,branchName:device.branchName||'Attendra Branch',deviceName:device.name,deviceKey:data.deviceKey});
+      const data=await api(`/v1/admin/devices/${encodeURIComponent(device.id)}/activation-token`,{method:'POST',body:'{}'});
+      const params=new URLSearchParams({activationToken:data.activationToken});
       const url=`${TABLET_URL}/?${params.toString()}`;
       const row=document.getElementById(`activation-${device.id}`);
-      row.innerHTML=`<div class="activation"><strong>Activation link ready</strong><p>Open this link on the physical tablet. It can be used to bind that browser to <b>${escapeHtml(device.branchName)}</b>.</p><code>${escapeHtml(url)}</code><div class="actions"><button class="btn" id="copy-${device.id}">Copy activation link</button><button class="btn secondary" id="open-${device.id}">Open on this device</button></div><small>Generating a new link invalidates the previous device key.</small></div>`;
+      row.innerHTML=`<div class="activation"><strong>Activation link ready</strong><p>Open this link on the physical tablet. It can be used once, within 10 minutes, to bind that browser to <b>${escapeHtml(device.branchName)}</b>.</p><code>${escapeHtml(url)}</code><div class="actions"><button class="btn" id="copy-${device.id}">Copy activation link</button><button class="btn secondary" id="open-${device.id}">Open on this device</button></div><small>This link expires in 10 minutes and can be used once.</small></div>`;
       document.getElementById(`copy-${device.id}`).onclick=async()=>{await navigator.clipboard.writeText(url);showStatus('Activation link copied. Send or open it only on the intended tablet.')};
       document.getElementById(`open-${device.id}`).onclick=()=>window.open(url,'_blank','noopener');
       showStatus('Activation link generated successfully.');
