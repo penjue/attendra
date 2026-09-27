@@ -65,6 +65,7 @@ function App() {
   const [rulesMessage, setRulesMessage] = useState('');
   const [passwordMessage, setPasswordMessage] = useState('');
   const [passwordError, setPasswordError] = useState('');
+  const [showPasswords, setShowPasswords] = useState(false);
 
   const makeHeaders = (extra?: HeadersInit) => {
     const headers = new Headers(extra);
@@ -262,7 +263,7 @@ function App() {
     setTimeMessage('Workforce report exported successfully.');
   };
 
-  if (!token) return <main className="loginShell"><section className="loginCard"><span className="eyebrow">ATTENDRA HQ</span><h1>Manager sign in</h1><p>Secure access to workforce attendance and employee management.</p><form onSubmit={login} className="loginForm"><label>Email<input name="email" type="email" autoComplete="username" required /></label><label>Password<input name="password" type="password" autoComplete="current-password" minLength={8} required /></label>{loginError && <div className="errorBox">{loginError}</div>}<button type="submit" className="primary">Sign in</button></form></section></main>;
+  if (!token) return <main className="loginShell"><section className="loginCard"><span className="eyebrow">ATTENDRA HQ</span><h1>Manager sign in</h1><p>Secure access to workforce attendance and employee management.</p><form onSubmit={login} className="loginForm"><label>Email<input name="email" type="email" autoComplete="username" required /></label><label>Password<input name="password" type={showPasswords ? "text" : "password"} autoComplete="current-password" minLength={8} required /></label>{loginError && <div className="errorBox">{loginError}</div>}<button type="submit" className="primary">Sign in</button></form></section></main>;
 
   const title = activeTab === 'overview' ? 'Workforce overview' : activeTab === 'employees' ? 'Employees' : activeTab === 'branches' ? 'Branches' : activeTab === 'devices' ? 'Devices' : activeTab === 'shifts' ? 'Shifts' : activeTab === 'timekeeping' ? 'Timekeeping' : activeTab === 'reports' ? 'Reports' : activeTab === 'rules' ? 'Workforce rules' : 'Account security';
   return <main className="shell">
@@ -319,8 +320,9 @@ function App() {
     {activeTab === 'security' && <section className="panel"><div className="panelHead"><div><h2>Change password</h2><span>Update your Attendra administrator password without changing any Render environment settings.</span></div></div>
       <form onSubmit={changePassword} className="employeeForm">
         <label>Current password<input name="currentPassword" type="password" autoComplete="current-password" minLength={8} required /></label>
-        <label>New password<input name="newPassword" type="password" autoComplete="new-password" minLength={8} required /></label>
-        <label>Confirm new password<input name="confirmPassword" type="password" autoComplete="new-password" minLength={8} required /></label>
+        <label>New password<input name="newPassword" type={showPasswords ? "text" : "password"} autoComplete="new-password" minLength={8} required /></label>
+        <label>Confirm new password<input name="confirmPassword" type={showPasswords ? "text" : "password"} autoComplete="new-password" minLength={8} required /></label>
+        <label className="checkLabel"><input type="checkbox" checked={showPasswords} onChange={e=>setShowPasswords(e.target.checked)} /> {showPasswords ? "Hide passwords" : "Show passwords"}</label>
         <button className="primary" type="submit">Change password</button>
       </form>
       {passwordMessage && <div className="infoBox">{passwordMessage}</div>}
