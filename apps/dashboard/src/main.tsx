@@ -10,7 +10,7 @@ type Branch = { id: string; name: string; timezone: string; address: string | nu
 type Device = { id: string; name: string; branchId: string; branchName: string; lastSeenAt: string | null; active: boolean; online: boolean; createdAt: string };
 type Shift = { id: string; employeeId: string; employeeName: string; employeeNumber: string; branchId: string; branchName: string; startsAt: string; endsAt: string; breakMinutes: number; createdAt: string };
 type AlertSettings = { lateAfterMinutes: number; missedShiftAfterMinutes: number; missingCheckoutAfterMinutes: number; tabletOfflineAfterMinutes: number; notifyHighPriority: boolean; notifyMediumPriority: boolean; updatedBy?: string | null; updatedAt?: string | null };
-type Tab = 'overview' | 'employees' | 'branches' | 'devices' | 'shifts' | 'timekeeping' | 'reports' | 'rules';
+type Tab = 'overview' | 'employees' | 'branches' | 'devices' | 'shifts' | 'timekeeping' | 'reports' | 'rules' | 'security';
 type TimeRow = { employeeId: string; employeeNumber: string; employeeName: string; workedMinutes: number; scheduledMinutes: number; overtimeMinutes: number; lateEvents: number; earlyEvents: number; missedShifts: number; openSession: boolean };
 type TimeTotals = { workedMinutes: number; scheduledMinutes: number; overtimeMinutes: number; lateEvents: number; earlyEvents: number; missedShifts: number; openSessions: number };
 type TimesheetEntry = { entryId: string; shiftId: string | null; employeeId: string; employeeNumber: string; employeeName: string; branchId: string; branchName: string; date: string; scheduledStart: string | null; scheduledEnd: string | null; breakMinutes: number; checkInAt: string | null; checkOutAt: string | null; workedMinutes: number; scheduledMinutes: number; overtimeMinutes: number; lateMinutes: number; earlyLeaveMinutes: number; status: 'COMPLETE' | 'OPEN' | 'MISSED' | 'UPCOMING' | 'UNSCHEDULED'; needsReview: boolean };
@@ -63,6 +63,8 @@ function App() {
   const [includeOvertime, setIncludeOvertime] = useState(() => localStorage.getItem('attendra_include_overtime') !== 'false');
   const [alertSettings, setAlertSettings] = useState<AlertSettings>({ lateAfterMinutes: 5, missedShiftAfterMinutes: 10, missingCheckoutAfterMinutes: 15, tabletOfflineAfterMinutes: 3, notifyHighPriority: true, notifyMediumPriority: false });
   const [rulesMessage, setRulesMessage] = useState('');
+  const [passwordMessage, setPasswordMessage] = useState('');
+  const [passwordError, setPasswordError] = useState('');
 
   const makeHeaders = (extra?: HeadersInit) => {
     const headers = new Headers(extra);
@@ -150,6 +152,21 @@ function App() {
       localStorage.setItem('attendra_include_overtime', String(next));
       return next;
     });
+  };
+
+  const changePassword = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault(); setPasswordMessage(''); setPasswordError('');
+    const formElement=event.currentTarget,form=new FormData(formElement);
+    const currentPassword=String(form.get('currentPassword')??''),newPassword=String(form.get('newPassword')??''),confirmPassword=String(form.get('confirmPassword')??'');
+    if(newPassword.length<8)return setPasswordError('New password must be at least 8 characters.');
+    if(newPassword!==confirmPassword)return setPasswordError('New passwords do not match.');
+    try{
+      await fetchJson(`${API_URL}/v1/admin/change-password`,{method:'POST',body:JSON.stringify({currentPassword,newPassword})});
+      formElement.reset(); setPasswordMessage('Password changed successfully. Sign in again with your new password.');
+      window.setTimeout(logout,1200);
+    }catch(error:any){
+      setPasswordError(error.message==='CURRENT_PASSWORD_INCORRECT'?'Current password is incorrect.':error.message==='PASSWORD_UNCHANGED'?'Choose a new password different from your current password.':'Unable to change password. Please try again.');
+    }
   };
 
   const login = async (event: FormEvent<HTMLFormElement>) => {
@@ -247,10 +264,10 @@ function App() {
 
   if (!token) return <main className="loginShell"><section className="loginCard"><span className="eyebrow">ATTENDRA HQ</span><h1>Manager sign in</h1><p>Secure access to workforce attendance and employee management.</p><form onSubmit={login} className="loginForm"><label>Email<input name="email" type="email" autoComplete="username" required /></label><label>Password<input name="password" type="password" autoComplete="current-password" minLength={8} required /></label>{loginError && <div className="errorBox">{loginError}</div>}<button type="submit" className="primary">Sign in</button></form></section></main>;
 
-  const title = activeTab === 'overview' ? 'Workforce overview' : activeTab === 'employees' ? 'Employees' : activeTab === 'branches' ? 'Branches' : activeTab === 'devices' ? 'Devices' : activeTab === 'shifts' ? 'Shifts' : activeTab === 'timekeeping' ? 'Timekeeping' : activeTab === 'reports' ? 'Reports' : 'Workforce rules';
+  const title = activeTab === 'overview' ? 'Workforce overview' : activeTab === 'employees' ? 'Employees' : activeTab === 'branches' ? 'Branches' : activeTab === 'devices' ? 'Devices' : activeTab === 'shifts' ? 'Shifts' : activeTab === 'timekeeping' ? 'Timekeeping' : activeTab === 'reports' ? 'Reports' : activeTab === 'rules' ? 'Workforce rules' : 'Account security';
   return <main className="shell">
     <header><div><span className="eyebrow">ATTENDRA HQ</span><h1>{title}</h1></div><div className="headerActions"><span className={`badge ${connected ? 'online' : ''}`}>{connected ? 'Live' : 'Connecting'}</span><button className="linkButton" onClick={logout}>Sign out</button></div></header>
-    <nav className="tabs"><button className={activeTab === 'overview' ? 'active' : ''} onClick={() => setActiveTab('overview')}>Overview</button><button className={activeTab === 'employees' ? 'active' : ''} onClick={() => { setActiveTab('employees'); loadEmployees(); }}>Employees</button><button className={activeTab === 'branches' ? 'active' : ''} onClick={() => { setActiveTab('branches'); loadBranches(); }}>Branches</button><button className={activeTab === 'devices' ? 'active' : ''} onClick={() => { setActiveTab('devices'); loadDevices(); loadBranches(); }}>Devices</button><button className={activeTab === 'shifts' ? 'active' : ''} onClick={() => { setActiveTab('shifts'); loadShifts(); loadEmployees(); loadBranches(); }}>Shifts</button><button className={activeTab === 'timekeeping' ? 'active' : ''} onClick={() => { setActiveTab('timekeeping'); setTimeout(loadTimeReport,0); }}>Time</button><button className={activeTab === 'reports' ? 'active' : ''} onClick={() => { setActiveTab('reports'); setTimeout(loadTimeReport,0); }}>Reports</button><button className={activeTab === 'rules' ? 'active' : ''} onClick={() => { setActiveTab('rules'); loadAlertSettings(); }}>Rules</button><span className="adminIdentity">{adminEmail}</span></nav>
+    <nav className="tabs"><button className={activeTab === 'overview' ? 'active' : ''} onClick={() => setActiveTab('overview')}>Overview</button><button className={activeTab === 'employees' ? 'active' : ''} onClick={() => { setActiveTab('employees'); loadEmployees(); }}>Employees</button><button className={activeTab === 'branches' ? 'active' : ''} onClick={() => { setActiveTab('branches'); loadBranches(); }}>Branches</button><button className={activeTab === 'devices' ? 'active' : ''} onClick={() => { setActiveTab('devices'); loadDevices(); loadBranches(); }}>Devices</button><button className={activeTab === 'shifts' ? 'active' : ''} onClick={() => { setActiveTab('shifts'); loadShifts(); loadEmployees(); loadBranches(); }}>Shifts</button><button className={activeTab === 'timekeeping' ? 'active' : ''} onClick={() => { setActiveTab('timekeeping'); setTimeout(loadTimeReport,0); }}>Time</button><button className={activeTab === 'reports' ? 'active' : ''} onClick={() => { setActiveTab('reports'); setTimeout(loadTimeReport,0); }}>Reports</button><button className={activeTab === 'rules' ? 'active' : ''} onClick={() => { setActiveTab('rules'); loadAlertSettings(); }}>Rules</button><button className={activeTab === 'security' ? 'active' : ''} onClick={() => { setActiveTab('security'); setPasswordMessage(''); setPasswordError(''); }}>Security</button><span className="adminIdentity">{adminEmail}</span></nav>
 
     {activeTab === 'overview' && <><section className="grid"><article><strong>{summary.checkedInNow}</strong><span>Checked in now</span></article><article><strong>{summary.lateToday}</strong><span>Late today</span></article><article><strong>{summary.absent}</strong><span>Absent</span></article><article><strong>{summary.offlineDevices}</strong><span>Offline devices</span></article></section><section className="panel"><div className="panelHead"><h2>Live attendance</h2><span>Refreshes every 5 seconds</span></div>{events.length === 0 ? <p className="empty">No attendance events yet.</p> : <div className="attendanceList">{events.map(event => <div className="attendanceRow" key={event.id}><div><strong>{event.employeeName}</strong><span>{event.employeeNumber} · {event.branchName}</span></div><div className="eventMeta"><b className={event.status.toLowerCase()}>{event.status.replace('_', ' ')}</b><span>{event.action === 'CHECK_IN' ? 'Checked in' : 'Checked out'} · {new Date(event.occurredAt).toLocaleString()}</span></div></div>)}</div>}</section></>}
 
@@ -298,6 +315,17 @@ function App() {
       </form>
       {rulesMessage && <div className="infoBox">{rulesMessage}</div>}
       <div className="infoBox">These settings are isolated to this company. Changes are recorded in the Attendra audit log.</div>
+    </section>}
+    {activeTab === 'security' && <section className="panel"><div className="panelHead"><div><h2>Change password</h2><span>Update your Attendra administrator password without changing any Render environment settings.</span></div></div>
+      <form onSubmit={changePassword} className="employeeForm">
+        <label>Current password<input name="currentPassword" type="password" autoComplete="current-password" minLength={8} required /></label>
+        <label>New password<input name="newPassword" type="password" autoComplete="new-password" minLength={8} required /></label>
+        <label>Confirm new password<input name="confirmPassword" type="password" autoComplete="new-password" minLength={8} required /></label>
+        <button className="primary" type="submit">Change password</button>
+      </form>
+      {passwordMessage && <div className="infoBox">{passwordMessage}</div>}
+      {passwordError && <div className="errorBox">{passwordError}</div>}
+      <div className="infoBox">For security, your current password is required. The password change is recorded in the Attendra audit log.</div>
     </section>}
   </main>;
 }
