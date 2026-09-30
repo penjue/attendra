@@ -64,6 +64,59 @@ app.post('/v1/admin/change-password',async(request,reply)=>{
   }catch(error){await c.query('ROLLBACK');app.log.error(error);return reply.code(500).send({ok:false,error:'PASSWORD_CHANGE_FAILED'})}finally{c.release()}
 });
 
+const PASSWORD_RESET_TTL_MS=30*60*1000;
+const PASSWORD_RESET_REQUEST_WINDOW_MS=15*60*1000;
+const passwordResetRequests=new Map<string,{count:number;windowStartedAt:number}>();
+const passwordResetKey=(request:any,email:string)=>`${String(request.ip||'unknown')}:${email}`;
+const passwordResetAllowed=(request:any,email:string)=>{
+  const key=passwordResetKey(request,email),now=Date.now(),current=passwordResetRequests.get(key);
+  if(!current||now-current.windowStartedAt>=PASSWORD_RESET_REQUEST_WINDOW_MS){passwordResetRequests.set(key,{count:1,windowStartedAt:now});return true}
+  if(current.count>=3)return false;
+  current.count+=1;passwordResetRequests.set(key,current);return true;
+};
+const sendPasswordResetEmail=async(to:string,resetUrl:string)=>{
+  const apiKey=process.env.RESEND_API_KEY??'',from=process.env.PASSWORD_RESET_FROM_EMAIL??'Attendra <no-reply@attendra.co.ke>';
+  if(!apiKey){app.log.warn('RESEND_API_KEY is not configured; password reset email was not sent.');return false}
+  const response=await fetch('https://api.resend.com/emails',{method:'POST',headers:{Authorization:`Bearer ${apiKey}`,'Content-Type':'application/json'},body:JSON.stringify({from,to,subject:'Reset your Attendra password',text:`A password reset was requested for your Attendra manager account.\n\nReset your password: ${resetUrl}\n\nThis link expires in 30 minutes and can only be used once. If you did not request this, you can ignore this email.`})});
+  if(!response.ok){app.log.error({status:response.status},'Password reset email delivery failed');return false}
+  return true;
+};
+
+app.post('/v1/admin/forgot-password',async(request,reply)=>{
+  const parsed=z.object({email:z.email()}).safeParse(request.body);
+  const generic={ok:true,message:'If that email is registered, a password reset link will be sent.'};
+  if(!parsed.success)return reply.code(200).send(generic);
+  const email=parsed.data.email.trim().toLowerCase();
+  if(!passwordResetAllowed(request,email))return reply.code(200).send(generic);
+  try{
+    const admin=await db.query(`select id,company_id,email from company_admins where lower(email)=lower($1) and active=true limit 1`,[email]);
+    if(!admin.rowCount)return reply.code(200).send(generic);
+    const rawToken=randomBytes(32).toString('base64url'),tokenHash=createHash('sha256').update(rawToken).digest('hex');
+    await db.query(`update admin_password_reset_tokens set used_at=now() where admin_id=$1 and used_at is null`,[admin.rows[0].id]);
+    await db.query(`insert into admin_password_reset_tokens(admin_id,company_id,token_hash,expires_at) values($1,$2,$3,$4)`,[admin.rows[0].id,admin.rows[0].company_id,tokenHash,new Date(Date.now()+PASSWORD_RESET_TTL_MS).toISOString()]);
+    const base=(process.env.PASSWORD_RESET_BASE_URL??'https://attendra.co.ke').replace(/\/$/,'');
+    const resetUrl=`${base}/?resetToken=${encodeURIComponent(rawToken)}`;
+    await sendPasswordResetEmail(admin.rows[0].email,resetUrl);
+    return reply.code(200).send(generic);
+  }catch(error){app.log.error(error);return reply.code(200).send(generic)}
+});
+
+app.post('/v1/admin/reset-password',async(request,reply)=>{
+  const parsed=z.object({token:z.string().min(32).max(256),newPassword:z.string().min(8).max(256)}).safeParse(request.body);
+  if(!parsed.success)return reply.code(400).send({ok:false,error:'INVALID_PASSWORD_RESET'});
+  const tokenHash=createHash('sha256').update(parsed.data.token).digest('hex'),client=await db.connect();
+  try{
+    await client.query('BEGIN');
+    const token=await client.query(`select pr.id,pr.admin_id,pr.company_id,ca.email from admin_password_reset_tokens pr join company_admins ca on ca.id=pr.admin_id where pr.token_hash=$1 and pr.used_at is null and pr.expires_at>now() and ca.active=true for update`,[tokenHash]);
+    if(!token.rowCount){await client.query('ROLLBACK');return reply.code(400).send({ok:false,error:'RESET_LINK_INVALID_OR_EXPIRED'})}
+    const row=token.rows[0];
+    await client.query(`update company_admins set password_hash=crypt($2,gen_salt('bf')) where id=$1`,[row.admin_id,parsed.data.newPassword]);
+    await client.query(`update admin_password_reset_tokens set used_at=now() where admin_id=$1 and used_at is null`,[row.admin_id]);
+    await client.query(`insert into audit_log(company_id,actor_type,actor_id,action,entity_type,entity_id,metadata) values($1,'ADMIN',$2,'RESET_PASSWORD','COMPANY_ADMIN',$2,jsonb_build_object('email',$3::text))`,[row.company_id,String(row.admin_id),row.email]);
+    await client.query('COMMIT');return{ok:true};
+  }catch(error){await client.query('ROLLBACK');app.log.error(error);return reply.code(500).send({ok:false,error:'PASSWORD_RESET_FAILED'})}finally{client.release()}
+});
+
 const attendanceSchema=z.object({companyId:z.uuid(),branchId:z.uuid(),deviceId:z.uuid(),employeeNumber:z.string().trim().min(1).max(64),pin:z.string().regex(/^\d{4,12}$/),action:z.enum(['CHECK_IN','CHECK_OUT']),occurredAt:z.iso.datetime().optional(),clientEventId:z.uuid().optional(),deviceKey:z.string().min(1).optional()});
 app.post('/v1/attendance/events',async(request,reply)=>{const p=attendanceSchema.safeParse(request.body);if(!p.success)return reply.code(400).send({ok:false,error:'INVALID_REQUEST',details:p.error.flatten()});const i=p.data,o=i.occurredAt?new Date(i.occurredAt):new Date(),c=await db.connect();try{await c.query('BEGIN');const d=await c.query('select id,device_key_hash from devices where id=$1 and company_id=$2 and branch_id=$3 and active=true for update',[i.deviceId,i.companyId,i.branchId]);if(!d.rowCount||!i.deviceKey||createHash('sha256').update(i.deviceKey).digest('hex')!==d.rows[0].device_key_hash){await c.query('ROLLBACK');return reply.code(403).send({ok:false,error:'DEVICE_NOT_AUTHORISED'})}if(i.clientEventId){const existing=await c.query(`select ae.id,ae.action,ae.status,ae.occurred_at,ae.received_at,e.id as employee_id,e.employee_number,e.first_name,e.last_name from attendance_events ae join employees e on e.id=ae.employee_id where ae.device_id=$1 and ae.client_event_id=$2 limit 1`,[i.deviceId,i.clientEventId]);if(existing.rowCount){await c.query('ROLLBACK');const x=existing.rows[0];return reply.code(200).send({ok:true,duplicate:true,employee:{id:x.employee_id,employeeNumber:x.employee_number,name:`${x.first_name} ${x.last_name}`},event:{id:x.id,action:x.action,status:x.status,occurred_at:x.occurred_at,received_at:x.received_at}})}}const er=await c.query(`select id,first_name,last_name from employees where company_id=$1 and employee_number=$2 and active=true and pin_hash=crypt($3,pin_hash) limit 1`,[i.companyId,i.employeeNumber,i.pin]);if(!er.rowCount){await c.query('ROLLBACK');return reply.code(401).send({ok:false,error:'INVALID_EMPLOYEE_OR_PIN'})}const e=er.rows[0];const sr=await c.query(`select id,starts_at,ends_at from shifts where company_id=$1 and branch_id=$2 and employee_id=$3 and $4::timestamptz between starts_at-interval '4 hours' and ends_at+interval '4 hours' order by abs(extract(epoch from(starts_at-$4::timestamptz))) limit 1`,[i.companyId,i.branchId,e.id,o.toISOString()]);const s=sr.rows[0]??null;let status:'ON_TIME'|'LATE'|'EARLY'|'UNSCHEDULED'='UNSCHEDULED';if(s&&i.action==='CHECK_IN'){const st=new Date(s.starts_at).getTime(),t=o.getTime(),g=300000;status=t>st+g?'LATE':t<st-g?'EARLY':'ON_TIME'}else if(s)status='ON_TIME';const ir=await c.query(`insert into attendance_events(company_id,branch_id,device_id,employee_id,shift_id,action,status,occurred_at,client_event_id) values($1,$2,$3,$4,$5,$6,$7,$8,$9) returning id,action,status,occurred_at,received_at`,[i.companyId,i.branchId,i.deviceId,e.id,s?.id??null,i.action,status,o.toISOString(),i.clientEventId??null]);await c.query('update devices set last_seen_at=now() where id=$1',[i.deviceId]);await c.query(`insert into audit_log(company_id,actor_type,actor_id,action,entity_type,entity_id,metadata) values($1,'DEVICE',$2,$3,'ATTENDANCE_EVENT',$4,jsonb_build_object('employeeId',$5::uuid,'branchId',$6::uuid))`,[i.companyId,i.deviceId,i.action,ir.rows[0].id,e.id,i.branchId]);await c.query('COMMIT');return reply.code(201).send({ok:true,employee:{id:e.id,employeeNumber:i.employeeNumber,name:`${e.first_name} ${e.last_name}`},event:ir.rows[0]})}catch(error){await c.query('ROLLBACK');app.log.error(error);return reply.code(500).send({ok:false,error:'ATTENDANCE_WRITE_FAILED'})}finally{c.release()}});
 
