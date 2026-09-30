@@ -29,6 +29,9 @@ function App() {
   const [token, setToken] = useState(() => sessionStorage.getItem('attendra_admin_token') ?? '');
   const [adminEmail, setAdminEmail] = useState(() => sessionStorage.getItem('attendra_admin_email') ?? '');
   const [loginError, setLoginError] = useState('');
+  const [authMode,setAuthMode]=useState<'login'|'forgot'|'reset'>(()=>new URLSearchParams(window.location.search).has('resetToken')?'reset':'login');
+  const [recoveryMessage,setRecoveryMessage]=useState('');
+  const [recoveryError,setRecoveryError]=useState('');
   const [activeTab, setActiveTab] = useState<Tab>('overview');
   const [summary, setSummary] = useState<Summary>({ checkedInNow: 0, lateToday: 0, absent: 0, offlineDevices: 0 });
   const [events, setEvents] = useState<AttendanceEvent[]>([]);
@@ -181,6 +184,28 @@ function App() {
     } catch (error: any) { setLoginError(error.message === 'ADMIN_NOT_CONFIGURED' ? 'Admin login has not been configured on the server yet.' : 'Email or password is incorrect.'); }
   };
 
+  const requestPasswordReset=async(event:FormEvent<HTMLFormElement>)=>{
+    event.preventDefault();setRecoveryMessage('');setRecoveryError('');
+    const email=String(new FormData(event.currentTarget).get('email')??'').trim();
+    try{
+      const response=await fetch(`${API_URL}/v1/admin/forgot-password`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({email})});
+      if(!response.ok)throw new Error('REQUEST_FAILED');
+      setRecoveryMessage('If that email is registered, a password reset link will be sent. Check your inbox and spam folder.');
+    }catch{setRecoveryError('Unable to request a password reset right now. Please try again.')}
+  };
+
+  const resetForgottenPassword=async(event:FormEvent<HTMLFormElement>)=>{
+    event.preventDefault();setRecoveryMessage('');setRecoveryError('');
+    const form=new FormData(event.currentTarget),newPassword=String(form.get('newPassword')??''),confirmPassword=String(form.get('confirmPassword')??''),resetToken=new URLSearchParams(window.location.search).get('resetToken')??'';
+    if(newPassword.length<8)return setRecoveryError('New password must be at least 8 characters.');
+    if(newPassword!==confirmPassword)return setRecoveryError('New passwords do not match.');
+    try{
+      const response=await fetch(`${API_URL}/v1/admin/reset-password`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({token:resetToken,newPassword})});
+      const data=await response.json();if(!response.ok)throw new Error(data.error??'PASSWORD_RESET_FAILED');
+      window.history.replaceState({},'',window.location.pathname);setAuthMode('login');setRecoveryError('');setLoginError('');setRecoveryMessage('Password reset successfully. You can now sign in with your new password.');
+    }catch(error:any){setRecoveryError(error.message==='RESET_LINK_INVALID_OR_EXPIRED'?'This reset link is invalid, expired, or has already been used. Request a new one.':'Unable to reset your password. Please try again.')}
+  };
+
   const addEmployee = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault(); setEmployeeMessage(''); const formElement = event.currentTarget; const form = new FormData(formElement);
     try { await fetchJson(`${API_URL}/v1/admin/employees`, { method: 'POST', body: JSON.stringify({ employeeNumber: form.get('employeeNumber'), firstName: form.get('firstName'), lastName: form.get('lastName'), pin: form.get('pin'), hourlyWorker: form.get('hourlyWorker') === 'on' }) }); formElement.reset(); setEmployeeMessage('Employee added successfully.'); await loadEmployees(); }
@@ -265,7 +290,7 @@ function App() {
     setTimeMessage('Workforce report exported successfully.');
   };
 
-  if (!token) return <main className="loginShell"><section className="loginCard"><span className="eyebrow">ATTENDRA HQ</span><h1>Manager sign in</h1><p>Secure access to workforce attendance and employee management.</p><form onSubmit={login} className="loginForm"><label>Email<input name="email" type="email" autoComplete="username" required /></label><label>Password<input name="password" type={showCurrentPassword ? "text" : "password"} autoComplete="current-password" minLength={8} required /></label>{loginError && <div className="errorBox">{loginError}</div>}<button type="submit" className="primary">Sign in</button></form></section></main>;
+  if (!token) return <main className="loginShell"><section className="loginCard"><span className="eyebrow">ATTENDRA HQ</span>{authMode==='login'?<><h1>Manager sign in</h1><p>Secure access to workforce attendance and employee management.</p>{recoveryMessage&&<div className="infoBox">{recoveryMessage}</div>}<form onSubmit={login} className="loginForm"><label>Email<input name="email" type="email" autoComplete="username" required /></label><label>Password<input name="password" type={showCurrentPassword ? "text" : "password"} autoComplete="current-password" minLength={8} required /></label>{loginError && <div className="errorBox">{loginError}</div>}<button type="button" className="linkButton" onClick={()=>{setAuthMode('forgot');setLoginError('');setRecoveryMessage('');setRecoveryError('')}}>Forgot password?</button><button type="submit" className="primary">Sign in</button></form></>:authMode==='forgot'?<><h1>Reset password</h1><p>Enter the email registered to your Attendra manager account.</p><form onSubmit={requestPasswordReset} className="loginForm"><label>Email<input name="email" type="email" autoComplete="email" required /></label>{recoveryMessage&&<div className="infoBox">{recoveryMessage}</div>}{recoveryError&&<div className="errorBox">{recoveryError}</div>}<button type="submit" className="primary">Send reset link</button><button type="button" className="linkButton" onClick={()=>{setAuthMode('login');setRecoveryMessage('');setRecoveryError('')}}>Back to sign in</button></form></>:<><h1>Choose a new password</h1><p>This secure reset link can only be used once.</p><form onSubmit={resetForgottenPassword} className="loginForm"><label>New password<input name="newPassword" type="password" autoComplete="new-password" minLength={8} required /></label><label>Confirm new password<input name="confirmPassword" type="password" autoComplete="new-password" minLength={8} required /></label>{recoveryError&&<div className="errorBox">{recoveryError}</div>}<button type="submit" className="primary">Reset password</button></form></>}</section></main>;
 
   const title = activeTab === 'overview' ? 'Workforce overview' : activeTab === 'employees' ? 'Employees' : activeTab === 'branches' ? 'Branches' : activeTab === 'devices' ? 'Devices' : activeTab === 'shifts' ? 'Shifts' : activeTab === 'timekeeping' ? 'Timekeeping' : activeTab === 'reports' ? 'Reports' : activeTab === 'rules' ? 'Workforce rules' : 'Account security';
   return <main className="shell">
