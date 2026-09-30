@@ -32,6 +32,19 @@ CREATE TABLE IF NOT EXISTS company_admins (
   last_login_at timestamptz
 );
 
+CREATE TABLE IF NOT EXISTS admin_password_reset_tokens (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  admin_id uuid NOT NULL REFERENCES company_admins(id) ON DELETE CASCADE,
+  company_id uuid NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+  token_hash text NOT NULL UNIQUE,
+  expires_at timestamptz NOT NULL,
+  used_at timestamptz,
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS idx_admin_password_reset_tokens_admin ON admin_password_reset_tokens(admin_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_admin_password_reset_tokens_expiry ON admin_password_reset_tokens(expires_at) WHERE used_at IS NULL;
+
 CREATE TABLE IF NOT EXISTS branches (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   company_id uuid NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
