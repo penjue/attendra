@@ -246,3 +246,108 @@ $$ LANGUAGE plpgsql;
 DROP TRIGGER IF EXISTS trg_prevent_completed_shift_check_in ON attendance_events;
 CREATE TRIGGER trg_prevent_completed_shift_check_in BEFORE INSERT ON attendance_events
 FOR EACH ROW EXECUTE FUNCTION prevent_completed_shift_check_in();
+
+-- Repeating schedules, temporary availability and published employee notices.
+CREATE TABLE IF NOT EXISTS employee_schedule_profiles (
+ employee_id uuid PRIMARY KEY REFERENCES employees(id) ON DELETE CASCADE,
+ company_id uuid NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+ job_role text NOT NULL DEFAULT '',
+ max_weekly_hours numeric NOT NULL DEFAULT 40 CHECK (max_weekly_hours>0 AND max_weekly_hours<=168),
+ allowed_branch_ids uuid[] NOT NULL DEFAULT '{}'
+);
+CREATE TABLE IF NOT EXISTS shift_patterns (
+ id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+ company_id uuid NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+ employee_id uuid NOT NULL REFERENCES employees(id) ON DELETE CASCADE,
+ branch_id uuid NOT NULL REFERENCES branches(id) ON DELETE CASCADE,
+ name text NOT NULL,
+ weekdays integer[] NOT NULL,
+ start_time time NOT NULL,
+ end_time time NOT NULL,
+ break_minutes integer NOT NULL DEFAULT 0 CHECK (break_minutes>=0),
+ active boolean NOT NULL DEFAULT true,
+ created_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE TABLE IF NOT EXISTS employee_unavailability (
+ id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+ company_id uuid NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+ employee_id uuid NOT NULL REFERENCES employees(id) ON DELETE CASCADE,
+ starts_at timestamptz NOT NULL,
+ ends_at timestamptz NOT NULL,
+ category text NOT NULL CHECK (category IN ('ABSENCE','INJURY','LEAVE','DAY_OFF')),
+ active boolean NOT NULL DEFAULT true,
+ created_at timestamptz NOT NULL DEFAULT now(),
+ CHECK (ends_at>starts_at)
+);
+CREATE INDEX IF NOT EXISTS idx_unavailability_employee_time ON employee_unavailability(company_id,employee_id,starts_at,ends_at) WHERE active=true;
+ALTER TABLE shifts ADD COLUMN IF NOT EXISTS published boolean NOT NULL DEFAULT true;
+ALTER TABLE shifts ADD COLUMN IF NOT EXISTS pattern_id uuid REFERENCES shift_patterns(id) ON DELETE SET NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_shift_pattern_occurrence ON shifts(pattern_id,starts_at) WHERE pattern_id IS NOT NULL;
+CREATE TABLE IF NOT EXISTS schedule_notices (
+ id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+ company_id uuid NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+ employee_id uuid NOT NULL REFERENCES employees(id) ON DELETE CASCADE,
+ message text NOT NULL,
+ created_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_schedule_notices_employee ON schedule_notices(company_id,employee_id,created_at DESC);
+
+-- These checks protect existing single-shift routes as well as bulk scheduling.
+CREATE OR REPLACE FUNCTION validate_shift_assignment() RETURNS trigger AS $$
+DECLARE profile employee_schedule_profiles%ROWTYPE;
+ company_zone text; week_start timestamptz; week_end timestamptz; scheduled_hours numeric; hours_limit numeric;
+BEGIN
+ PERFORM id FROM employees WHERE id=NEW.employee_id AND company_id=NEW.company_id AND active=true FOR UPDATE;
+ IF NOT FOUND THEN RAISE EXCEPTION 'EMPLOYEE_NOT_FOUND' USING ERRCODE='P0001'; END IF;
+ PERFORM id FROM branches WHERE id=NEW.branch_id AND company_id=NEW.company_id AND active=true;
+ IF NOT FOUND THEN RAISE EXCEPTION 'BRANCH_NOT_FOUND' USING ERRCODE='P0001'; END IF;
+ IF TG_OP='UPDATE' AND (NEW.employee_id,NEW.branch_id,NEW.starts_at,NEW.ends_at,NEW.break_minutes) IS DISTINCT FROM (OLD.employee_id,OLD.branch_id,OLD.starts_at,OLD.ends_at,OLD.break_minutes)
+ AND EXISTS(SELECT 1 FROM attendance_events WHERE shift_id=NEW.id) THEN
+  RAISE EXCEPTION 'SHIFT_HAS_ATTENDANCE' USING ERRCODE='P0001';
+ END IF;
+ IF NEW.break_minutes>=extract(epoch FROM(NEW.ends_at-NEW.starts_at))/60 THEN RAISE EXCEPTION 'BREAK_EXCEEDS_SHIFT' USING ERRCODE='P0001'; END IF;
+ IF EXISTS(SELECT 1 FROM shifts WHERE company_id=NEW.company_id AND employee_id=NEW.employee_id AND id<>NEW.id AND starts_at<NEW.ends_at AND ends_at>NEW.starts_at) THEN
+  RAISE EXCEPTION 'SHIFT_OVERLAP' USING ERRCODE='P0001';
+ END IF;
+ IF NEW.published AND EXISTS(SELECT 1 FROM employee_unavailability WHERE company_id=NEW.company_id AND employee_id=NEW.employee_id AND active=true AND starts_at<NEW.ends_at AND ends_at>NEW.starts_at) THEN
+  RAISE EXCEPTION 'EMPLOYEE_UNAVAILABLE' USING ERRCODE='P0001';
+ END IF;
+ SELECT * INTO profile FROM employee_schedule_profiles WHERE employee_id=NEW.employee_id AND company_id=NEW.company_id;
+ IF FOUND AND cardinality(profile.allowed_branch_ids)>0 AND NOT(NEW.branch_id=ANY(profile.allowed_branch_ids)) THEN
+  RAISE EXCEPTION 'BRANCH_NOT_ALLOWED' USING ERRCODE='P0001';
+ END IF;
+ SELECT timezone INTO company_zone FROM companies WHERE id=NEW.company_id;
+ week_start:=date_trunc('week',NEW.starts_at AT TIME ZONE company_zone) AT TIME ZONE company_zone;
+ week_end:=(date_trunc('week',NEW.starts_at AT TIME ZONE company_zone)+interval '7 days') AT TIME ZONE company_zone;
+ hours_limit:=coalesce(profile.max_weekly_hours,40);
+ SELECT coalesce(sum(extract(epoch FROM(ends_at-starts_at))/3600-break_minutes/60.0),0) INTO scheduled_hours
+ FROM shifts WHERE company_id=NEW.company_id AND employee_id=NEW.employee_id AND id<>NEW.id AND starts_at>=week_start AND starts_at<week_end;
+ IF scheduled_hours+extract(epoch FROM(NEW.ends_at-NEW.starts_at))/3600-NEW.break_minutes/60.0>hours_limit THEN
+  RAISE EXCEPTION 'WEEKLY_HOURS_EXCEEDED' USING ERRCODE='P0001';
+ END IF;
+ RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+DROP TRIGGER IF EXISTS trg_validate_shift_assignment ON shifts;
+CREATE TRIGGER trg_validate_shift_assignment BEFORE INSERT OR UPDATE OF employee_id,branch_id,starts_at,ends_at,break_minutes,published ON shifts
+FOR EACH ROW EXECUTE FUNCTION validate_shift_assignment();
+
+CREATE OR REPLACE FUNCTION validate_employee_shift_attendance() RETURNS trigger AS $$
+BEGIN
+ IF NEW.source IN ('TABLET','EMPLOYEE_QR') AND NEW.shift_id IS NOT NULL THEN
+  PERFORM id FROM shifts WHERE id=NEW.shift_id AND company_id=NEW.company_id AND employee_id=NEW.employee_id AND branch_id=NEW.branch_id FOR UPDATE;
+  IF NOT FOUND THEN RAISE EXCEPTION 'SHIFT_ASSIGNMENT_CHANGED' USING ERRCODE='P0001'; END IF;
+ END IF;
+ IF NEW.source IN ('TABLET','EMPLOYEE_QR') AND NEW.shift_id IS NOT NULL AND NEW.action='CHECK_IN' THEN
+  IF NOT EXISTS(SELECT 1 FROM shifts WHERE id=NEW.shift_id AND published=true) THEN RAISE EXCEPTION 'SHIFT_NOT_PUBLISHED' USING ERRCODE='P0001'; END IF;
+  IF EXISTS(SELECT 1 FROM employee_unavailability u JOIN shifts s ON s.id=NEW.shift_id
+   WHERE u.employee_id=NEW.employee_id AND u.company_id=NEW.company_id AND u.active=true AND u.starts_at<s.ends_at AND u.ends_at>s.starts_at) THEN
+   RAISE EXCEPTION 'EMPLOYEE_UNAVAILABLE' USING ERRCODE='P0001';
+  END IF;
+ END IF;
+ RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+DROP TRIGGER IF EXISTS trg_validate_employee_shift_attendance ON attendance_events;
+CREATE TRIGGER trg_validate_employee_shift_attendance BEFORE INSERT ON attendance_events
+FOR EACH ROW EXECUTE FUNCTION validate_employee_shift_attendance();

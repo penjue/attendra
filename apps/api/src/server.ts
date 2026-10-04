@@ -1,4 +1,5 @@
-import { isCompletedShiftError } from './attendance-policy.js';
+import { registerSchedulingRoutes } from './scheduling.js';
+import { attendancePolicyError } from './attendance-policy.js';
 import Fastify from 'fastify';
 import { registerEmployeeRoutes } from './employee-routes.js';
 import { registerEmployeeQrRoutes } from './employee-qr.js';
@@ -9,6 +10,7 @@ import { db, pingDatabase } from './db.js';
 
 const app = Fastify({ logger: true });
 registerEmployeeRoutes(app, db);
+registerSchedulingRoutes(app, db);
 registerEmployeeQrRoutes(app, db);
 const allowedOrigins = (process.env.CORS_ORIGIN ?? '')
   .split(',')
@@ -145,7 +147,7 @@ app.post('/v1/attendance/events', async (request, reply) => {
          and employee_number = $2
          and active = true
          and pin_hash = crypt($3, pin_hash)
-       limit 1`,
+       limit 1 for update`,
       [input.companyId, input.employeeNumber, input.pin]
     );
 
@@ -158,7 +160,7 @@ app.post('/v1/attendance/events', async (request, reply) => {
     const shiftResult = await client.query(
       `select id, starts_at, ends_at
        from shifts
-       where company_id = $1
+       where published=true and company_id = $1
          and branch_id = $2
          and employee_id = $3
          and $4::timestamptz between starts_at - interval '4 hours' and ends_at + interval '4 hours'
@@ -207,7 +209,7 @@ app.post('/v1/attendance/events', async (request, reply) => {
     });
   } catch (error) {
     await client.query('ROLLBACK');
-    if (isCompletedShiftError(error)) return reply.code(409).send({ ok: false, error: 'SHIFT_ALREADY_COMPLETED' });
+    if (attendancePolicyError(error)) return reply.code(409).send({ ok: false, error: attendancePolicyError(error) });
     app.log.error(error);
     return reply.code(500).send({ ok: false, error: 'ATTENDANCE_WRITE_FAILED' });
   } finally {

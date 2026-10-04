@@ -19,6 +19,9 @@ function readPending() {
 }
 export function captureAttendanceQr() { return readPending(); }
 const errors: Record<string, string> = {
+  SHIFT_ASSIGNMENT_CHANGED: 'Your shift was changed. Refresh your schedule and scan again.',
+  EMPLOYEE_UNAVAILABLE: 'You are marked unavailable for this shift. Contact your manager.',
+  SHIFT_NOT_PUBLISHED: 'This shift has not been published yet. Contact your manager.',
   SHIFT_ALREADY_COMPLETED: 'You have already checked out of this shift. You can check in for your next scheduled shift.',
   QR_EXPIRED_OR_UNAVAILABLE: 'This QR expired or is unavailable for your company. Scan the current code on the tablet.',
   ALREADY_CHECKED_IN: 'You are already checked in. Use the check-out QR when your shift ends.',
