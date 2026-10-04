@@ -183,3 +183,25 @@ CREATE INDEX IF NOT EXISTS idx_attendance_company_time ON attendance_events(comp
 CREATE INDEX IF NOT EXISTS idx_attendance_employee_time ON attendance_events(employee_id, occurred_at DESC);
 CREATE INDEX IF NOT EXISTS idx_shifts_employee_start ON shifts(employee_id, starts_at);
 CREATE INDEX IF NOT EXISTS idx_pay_period_approvals_company_period ON pay_period_approvals(company_id, period_from, period_to);
+
+CREATE TABLE IF NOT EXISTS employee_sessions (
+ token_hash text PRIMARY KEY,
+ company_id uuid NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+ employee_id uuid NOT NULL REFERENCES employees(id) ON DELETE CASCADE,
+ credential_hash text NOT NULL,
+ expires_at timestamptz NOT NULL,
+ created_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_employee_sessions_expiry ON employee_sessions(expires_at);
+
+CREATE OR REPLACE FUNCTION revoke_employee_sessions() RETURNS trigger AS $$
+BEGIN
+ IF NEW.pin_hash IS DISTINCT FROM OLD.pin_hash OR NOT NEW.active THEN
+  DELETE FROM employee_sessions WHERE employee_id=NEW.id;
+ END IF;
+ RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+DROP TRIGGER IF EXISTS employee_session_revocation ON employees;
+CREATE TRIGGER employee_session_revocation AFTER UPDATE OF pin_hash, active ON employees
+FOR EACH ROW EXECUTE FUNCTION revoke_employee_sessions();
