@@ -19,7 +19,7 @@ If signing in takes longer than the code lifetime, scan the current code again. 
 
 The tablet must prove its device key to create a code. Only the challenge token appears in the QR. Token hashes and the issuing device-key hash are stored; codes cannot be used after device deactivation, branch deactivation, device reassignment, key reset or expiry. Employees must have a current session for the same company. Device and worker locks plus a unique per-worker claim protect retries. The worker is reauthenticated and code expiry rechecked after locks are acquired.
 
-Check-in requires a shift at the scanned branch within the existing four-hour scheduling window. An open check-in prevents another check-in. Check-out requires an open check-in at the same branch and links to its original scheduled shift. Attendance times come from the API, and check-in uses the existing five-minute early/late grace period. Source is EMPLOYEE_QR and the transaction writes attendance, replay claim and employee audit entry together.
+Check-in requires a shift at the scanned branch within the existing four-hour scheduling window. An open check-in prevents another check-in. Checkout is final for that scheduled shift: both QR and tablet PIN attendance reject another check-in to a shift that has a checkout. Existing attendance history is preserved. Check-out requires an open check-in at the same branch and links to its original scheduled shift. Attendance times come from the API, and check-in uses the existing five-minute early/late grace period. Source is EMPLOYEE_QR and the transaction writes attendance, replay claim and employee audit entry together.
 
 ## Verification
 

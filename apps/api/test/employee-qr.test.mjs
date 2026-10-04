@@ -24,7 +24,8 @@ function fixture(options = {}) {
     } else if (sql.startsWith('select ae.id')) { if (state.claim) rows = [state.claim]; }
     else if (sql.startsWith('select action,shift_id')) { if (state.events.length) { const last = state.events.at(-1); rows = [{ action: last.action, shift_id: 'shift', branch_id: state.openBranch || branch }]; } }
     else if (sql.startsWith('select id,starts_at')) { if (state.scheduled) rows = [{ id: 'shift', starts_at: new Date(Date.now() - 600000), ends_at: new Date(Date.now() + 3600000) }]; }
-    else if (sql.startsWith('insert into attendance_events')) { const event = { id: `event-${state.events.length}`, action: params[5], status: params[6], occurredAt: params[7] }; state.events.push(event); rows = [event]; }
+    else if (sql.startsWith('select 1 from attendance_events')) { if (state.completed) rows = [{ exists: true }]; }
+    else if (sql.startsWith('insert into attendance_events')) { if(state.completedAtInsert) throw Object.assign(Error('SHIFT_ALREADY_COMPLETED'),{code:'P0001'}); const event = { id: `event-${state.events.length}`, action: params[5], status: params[6], occurredAt: params[7] }; state.events.push(event); rows = [event]; }
     else if (sql.startsWith('insert into attendance_qr_claims')) state.claim = state.events.at(-1);
     else if (sql.startsWith('insert into audit_log') && state.failAudit) throw Error('Simulated database failure');
     else if (sql.startsWith('select d.id')) { if (state.deviceActive && params[0] === device && params[1] === company && params[2] === branch && params[3] === hash('device-key')) rows = [{ id: device }]; }
@@ -96,4 +97,19 @@ test('audit failure rolls back attendance and claim together', async t => {
 test('QR that expires while waiting for locks cannot record attendance', async t => {
  const { app, state } = fixture({ expireDuringLock: true }); t.after(() => app.close());
  assert.equal((await app.inject(attendance)).statusCode, 410); assert.equal(state.events.length, 0);
+});
+
+test('completed shift rejects a fresh QR check-in, without writing attendance', async t => {
+ const { app, state } = fixture({ completed: true, events: [{ action: 'CHECK_OUT' }] }); t.after(() => app.close());
+ const response = await app.inject(attendance);
+ assert.equal(response.statusCode, 409); assert.equal(response.json().error, 'SHIFT_ALREADY_COMPLETED'); assert.equal(state.events.length, 1);
+});
+test('database guard maps completion race to a clear conflict and rolls back', async t => {
+ const { app, state } = fixture({ completedAtInsert: true }); t.after(() => app.close());
+ const response = await app.inject(attendance);
+ assert.equal(response.statusCode, 409); assert.equal(response.json().error, 'SHIFT_ALREADY_COMPLETED'); assert.equal(state.events.length, 0); assert.equal(state.claim, null);
+});
+test('checkout from another shift does not stop a new scheduled shift', async t => {
+ const { app } = fixture({ completed: false, events: [{ action: 'CHECK_OUT' }] }); t.after(() => app.close());
+ assert.equal((await app.inject(attendance)).statusCode, 201);
 });
