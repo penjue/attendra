@@ -27,7 +27,7 @@ const errors: Record<string, string> = {
   EMPLOYEE_AUTH_REQUIRED: 'Your session ended. Sign out and sign in again.',
   INVALID_QR_CODE: 'Scan an Attendra attendance QR from the tablet.'
 };
-export function EmployeeQr({ api, token, onRecorded }: { api: string; token: string; onRecorded: () => void }) {
+export function EmployeeQr({ api, token, timeZone, onRecorded }: { api: string; token: string; timeZone: string; onRecorded: () => void }) {
   const [pending, setPending] = useState(readPending);
   const [revision, setRevision] = useState(0);
   const [preview, setPreview] = useState<{ action: string; branchName: string; expiresAt: string } | null>(null);
@@ -73,7 +73,7 @@ export function EmployeeQr({ api, token, onRecorded }: { api: string; token: str
     try {
       const response = await fetch(`${api}/v1/employee/attendance/qr`, { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` }, body: JSON.stringify({ qrToken: pending }) });
       const data = await response.json(); if (!response.ok) throw Error(errors[data.error] || 'Unable to record attendance. Check your connection and retry.');
-      setMessage(`${data.event.action === 'CHECK_IN' ? 'Check-in' : 'Check-out'} ${data.duplicate ? 'already recorded' : 'recorded'} at ${new Date(data.event.occurredAt).toLocaleTimeString()}.`);
+      setMessage(`${data.event.action === 'CHECK_IN' ? 'Check-in' : 'Check-out'} ${data.duplicate ? 'already recorded' : 'recorded'} at ${new Date(data.event.occurredAt).toLocaleTimeString([], { timeZone })}.`);
       sessionStorage.removeItem('attendra_pending_qr'); setPending(''); setPreview(null); onRecorded();
     } catch (failure: any) { setError(failure.message || 'Unable to record attendance. Please retry.'); } finally { setBusy(false); }
   };
