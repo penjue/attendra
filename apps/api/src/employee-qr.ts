@@ -1,3 +1,4 @@
+import { isCompletedShiftError } from './attendance-policy.js';
 import { createHash, randomBytes } from 'node:crypto';
 import type { FastifyInstance } from 'fastify';
 import type { Pool, PoolClient } from 'pg';
@@ -82,10 +83,14 @@ export function registerEmployeeQrRoutes(app: FastifyInstance, db: Pick<Pool, 'q
       if (open && open.branch_id !== qr.branch_id) return await reject(409, 'CHECK_OUT_AT_ORIGINAL_BRANCH');
       const now = new Date();
       const shift = qr.action === 'CHECK_OUT'
-        ? await client.query(`select id,starts_at,ends_at from shifts where id=$1 and company_id=$2 and employee_id=$3 and branch_id=$4 for share`, [open.shift_id, employee.companyId, employee.employeeId, qr.branch_id])
-        : await client.query(`select id,starts_at,ends_at from shifts where company_id=$1 and employee_id=$2 and branch_id=$3 and $4::timestamptz between starts_at-interval '4 hours' and ends_at+interval '4 hours' order by abs(extract(epoch from(starts_at-$4::timestamptz))) limit 1 for share`, [employee.companyId, employee.employeeId, qr.branch_id, now.toISOString()]);
+        ? await client.query(`select id,starts_at,ends_at from shifts where id=$1 and company_id=$2 and employee_id=$3 and branch_id=$4 for update`, [open.shift_id, employee.companyId, employee.employeeId, qr.branch_id])
+        : await client.query(`select id,starts_at,ends_at from shifts where company_id=$1 and employee_id=$2 and branch_id=$3 and $4::timestamptz between starts_at-interval '4 hours' and ends_at+interval '4 hours' order by abs(extract(epoch from(starts_at-$4::timestamptz))) limit 1 for update`, [employee.companyId, employee.employeeId, qr.branch_id, now.toISOString()]);
       if (!shift.rowCount) return await reject(409, 'NO_SCHEDULED_SHIFT');
       const scheduled = shift.rows[0];
+      if (qr.action === 'CHECK_IN') {
+        const completed = await client.query(`select 1 from attendance_events where company_id=$1 and employee_id=$2 and shift_id=$3 and action='CHECK_OUT' limit 1`, [employee.companyId, employee.employeeId, scheduled.id]);
+        if (completed.rowCount) return await reject(409, 'SHIFT_ALREADY_COMPLETED');
+      }
       const delta = now.getTime() - new Date(scheduled.starts_at).getTime();
       const status = qr.action === 'CHECK_IN' ? delta > 300000 ? 'LATE' : delta < -300000 ? 'EARLY' : 'ON_TIME' : 'ON_TIME';
       const event = await client.query(`insert into attendance_events(company_id,branch_id,device_id,employee_id,shift_id,action,status,occurred_at,source)
@@ -98,7 +103,9 @@ export function registerEmployeeQrRoutes(app: FastifyInstance, db: Pick<Pool, 'q
       await client.query('COMMIT');
       return reply.code(201).send({ ok: true, event: event.rows[0] });
     } catch (error) {
-      await client.query('ROLLBACK'); app.log.error(error);
+      await client.query('ROLLBACK');
+      if (isCompletedShiftError(error)) return reply.code(409).send({ ok: false, error: 'SHIFT_ALREADY_COMPLETED' });
+      app.log.error(error);
       return reply.code(500).send({ ok: false, error: 'ATTENDANCE_WRITE_FAILED' });
     } finally { client.release(); }
   });

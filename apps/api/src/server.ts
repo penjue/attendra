@@ -1,3 +1,4 @@
+import { isCompletedShiftError } from './attendance-policy.js';
 import Fastify from 'fastify';
 import { registerEmployeeRoutes } from './employee-routes.js';
 import { registerEmployeeQrRoutes } from './employee-qr.js';
@@ -206,6 +207,7 @@ app.post('/v1/attendance/events', async (request, reply) => {
     });
   } catch (error) {
     await client.query('ROLLBACK');
+    if (isCompletedShiftError(error)) return reply.code(409).send({ ok: false, error: 'SHIFT_ALREADY_COMPLETED' });
     app.log.error(error);
     return reply.code(500).send({ ok: false, error: 'ATTENDANCE_WRITE_FAILED' });
   } finally {

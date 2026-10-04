@@ -19,6 +19,7 @@ function readPending() {
 }
 export function captureAttendanceQr() { return readPending(); }
 const errors: Record<string, string> = {
+  SHIFT_ALREADY_COMPLETED: 'You have already checked out of this shift. You can check in for your next scheduled shift.',
   QR_EXPIRED_OR_UNAVAILABLE: 'This QR expired or is unavailable for your company. Scan the current code on the tablet.',
   ALREADY_CHECKED_IN: 'You are already checked in. Use the check-out QR when your shift ends.',
   NO_OPEN_CHECK_IN: 'You need to check in before checking out.',

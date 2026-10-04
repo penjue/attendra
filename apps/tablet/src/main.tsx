@@ -211,6 +211,8 @@ function App() {
       if (!response.ok) {
         const text = data.error === 'INVALID_EMPLOYEE_OR_PIN'
           ? 'Employee number or PIN is incorrect.'
+          : data.error === 'SHIFT_ALREADY_COMPLETED'
+            ? 'You have already checked out of this shift. You can check in for your next scheduled shift.'
           : data.error === 'DEVICE_NOT_AUTHORISED'
             ? 'This tablet is not authorised for this branch.'
             : data.error === 'NO_SCHEDULED_SHIFT' || data.error === 'ATTENDANCE_WRITE_FAILED'

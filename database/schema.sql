@@ -225,3 +225,24 @@ CREATE TABLE IF NOT EXISTS attendance_qr_claims (
  event_id uuid NOT NULL REFERENCES attendance_events(id) ON DELETE CASCADE,
  PRIMARY KEY(challenge_id,employee_id)
 );
+
+-- Checkout is final for a scheduled shift across both employee attendance methods.
+CREATE OR REPLACE FUNCTION prevent_completed_shift_check_in() RETURNS trigger AS $$
+BEGIN
+ IF NEW.shift_id IS NOT NULL AND NEW.source IN ('TABLET','EMPLOYEE_QR') THEN
+  -- Serialize check-in with checkout, including submissions from different tablets.
+  PERFORM id FROM shifts WHERE id=NEW.shift_id FOR UPDATE;
+  IF NEW.action='CHECK_IN' AND EXISTS (
+   SELECT 1 FROM attendance_events
+   WHERE company_id=NEW.company_id AND employee_id=NEW.employee_id
+     AND shift_id=NEW.shift_id AND action='CHECK_OUT'
+  ) THEN
+   RAISE EXCEPTION 'SHIFT_ALREADY_COMPLETED' USING ERRCODE='P0001';
+  END IF;
+ END IF;
+ RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+DROP TRIGGER IF EXISTS trg_prevent_completed_shift_check_in ON attendance_events;
+CREATE TRIGGER trg_prevent_completed_shift_check_in BEFORE INSERT ON attendance_events
+FOR EACH ROW EXECUTE FUNCTION prevent_completed_shift_check_in();
