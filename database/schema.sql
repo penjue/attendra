@@ -205,3 +205,23 @@ $$ LANGUAGE plpgsql;
 DROP TRIGGER IF EXISTS employee_session_revocation ON employees;
 CREATE TRIGGER employee_session_revocation AFTER UPDATE OF pin_hash, active ON employees
 FOR EACH ROW EXECUTE FUNCTION revoke_employee_sessions();
+
+-- Short-lived tablet QR challenges. A display can be scanned by multiple workers.
+CREATE TABLE IF NOT EXISTS attendance_qr_challenges (
+ id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+ token_hash text NOT NULL UNIQUE,
+ company_id uuid NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+ branch_id uuid NOT NULL REFERENCES branches(id) ON DELETE CASCADE,
+ device_id uuid NOT NULL REFERENCES devices(id) ON DELETE CASCADE,
+ device_key_hash text NOT NULL,
+ action attendance_action NOT NULL,
+ expires_at timestamptz NOT NULL,
+ created_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_attendance_qr_expiry ON attendance_qr_challenges(expires_at);
+CREATE TABLE IF NOT EXISTS attendance_qr_claims (
+ challenge_id uuid NOT NULL REFERENCES attendance_qr_challenges(id) ON DELETE CASCADE,
+ employee_id uuid NOT NULL REFERENCES employees(id) ON DELETE CASCADE,
+ event_id uuid NOT NULL REFERENCES attendance_events(id) ON DELETE CASCADE,
+ PRIMARY KEY(challenge_id,employee_id)
+);

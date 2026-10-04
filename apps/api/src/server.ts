@@ -1,5 +1,6 @@
 import Fastify from 'fastify';
 import { registerEmployeeRoutes } from './employee-routes.js';
+import { registerEmployeeQrRoutes } from './employee-qr.js';
 import cors from '@fastify/cors';
 import { createHash, createHmac, timingSafeEqual } from 'node:crypto';
 import { z } from 'zod';
@@ -7,6 +8,7 @@ import { db, pingDatabase } from './db.js';
 
 const app = Fastify({ logger: true });
 registerEmployeeRoutes(app, db);
+registerEmployeeQrRoutes(app, db);
 const allowedOrigins = (process.env.CORS_ORIGIN ?? '')
   .split(',')
   .map(value => value.trim())
