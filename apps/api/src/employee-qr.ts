@@ -1,4 +1,4 @@
-import { isCompletedShiftError } from './attendance-policy.js';
+import { attendancePolicyError } from './attendance-policy.js';
 import { createHash, randomBytes } from 'node:crypto';
 import type { FastifyInstance } from 'fastify';
 import type { Pool, PoolClient } from 'pg';
@@ -84,7 +84,7 @@ export function registerEmployeeQrRoutes(app: FastifyInstance, db: Pick<Pool, 'q
       const now = new Date();
       const shift = qr.action === 'CHECK_OUT'
         ? await client.query(`select id,starts_at,ends_at from shifts where id=$1 and company_id=$2 and employee_id=$3 and branch_id=$4 for update`, [open.shift_id, employee.companyId, employee.employeeId, qr.branch_id])
-        : await client.query(`select id,starts_at,ends_at from shifts where company_id=$1 and employee_id=$2 and branch_id=$3 and $4::timestamptz between starts_at-interval '4 hours' and ends_at+interval '4 hours' order by abs(extract(epoch from(starts_at-$4::timestamptz))) limit 1 for update`, [employee.companyId, employee.employeeId, qr.branch_id, now.toISOString()]);
+        : await client.query(`select id,starts_at,ends_at from shifts where published=true and company_id=$1 and employee_id=$2 and branch_id=$3 and $4::timestamptz between starts_at-interval '4 hours' and ends_at+interval '4 hours' order by abs(extract(epoch from(starts_at-$4::timestamptz))) limit 1 for update`, [employee.companyId, employee.employeeId, qr.branch_id, now.toISOString()]);
       if (!shift.rowCount) return await reject(409, 'NO_SCHEDULED_SHIFT');
       const scheduled = shift.rows[0];
       if (qr.action === 'CHECK_IN') {
@@ -104,7 +104,7 @@ export function registerEmployeeQrRoutes(app: FastifyInstance, db: Pick<Pool, 'q
       return reply.code(201).send({ ok: true, event: event.rows[0] });
     } catch (error) {
       await client.query('ROLLBACK');
-      if (isCompletedShiftError(error)) return reply.code(409).send({ ok: false, error: 'SHIFT_ALREADY_COMPLETED' });
+      if (attendancePolicyError(error)) return reply.code(409).send({ ok: false, error: attendancePolicyError(error) });
       app.log.error(error);
       return reply.code(500).send({ ok: false, error: 'ATTENDANCE_WRITE_FAILED' });
     } finally { client.release(); }

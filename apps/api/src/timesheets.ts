@@ -88,7 +88,7 @@ export const registerTimesheetRoutes=(app:any,requireAdmin:RequireAdmin)=>{
     if(!p.success)return reply.code(400).send({ok:false,error:'INVALID_REQUEST'});
     const employee=await db.query(`select id from employees where company_id=$1 and employee_number=$2 and active=true and pin_hash=crypt($3,pin_hash) limit 1`,[p.data.companyId,p.data.employeeNumber,p.data.pin]);
     if(!employee.rowCount)return reply.code(401).send({ok:false,error:'INVALID_EMPLOYEE_OR_PIN'});
-    const shift=await db.query(`select id,starts_at as "startsAt",ends_at as "endsAt" from shifts where company_id=$1 and branch_id=$2 and employee_id=$3 and $4::timestamptz between starts_at-interval '4 hours' and ends_at+interval '4 hours' order by abs(extract(epoch from(starts_at-$4::timestamptz))) limit 1`,[p.data.companyId,p.data.branchId,employee.rows[0].id,p.data.occurredAt]);
+    const shift=await db.query(`select id,starts_at as "startsAt",ends_at as "endsAt" from shifts where published=true and company_id=$1 and branch_id=$2 and employee_id=$3 and $4::timestamptz between starts_at-interval '4 hours' and ends_at+interval '4 hours' order by abs(extract(epoch from(starts_at-$4::timestamptz))) limit 1`,[p.data.companyId,p.data.branchId,employee.rows[0].id,p.data.occurredAt]);
     if(!shift.rowCount)return reply.code(409).send({ok:false,error:'NO_SCHEDULED_SHIFT'});
     return{ok:true,shift:shift.rows[0]};
   });
@@ -100,7 +100,7 @@ export const registerTimesheetRoutes=(app:any,requireAdmin:RequireAdmin)=>{
     const lookback=new Date(fromMs-24*60*60*1000).toISOString();
     const lookahead=new Date(toMs+24*60*60*1000).toISOString();
     const [shiftsResult,eventsResult]=await Promise.all([
-      db.query(`select s.id,s.employee_id as "employeeId",e.employee_number as "employeeNumber",concat(e.first_name,' ',e.last_name) as "employeeName",s.branch_id as "branchId",b.name as "branchName",s.starts_at as "startsAt",s.ends_at as "endsAt",s.break_minutes as "breakMinutes" from shifts s join employees e on e.id=s.employee_id join branches b on b.id=s.branch_id where s.company_id=$1 and s.starts_at<$3::timestamptz and s.ends_at>$2::timestamptz order by e.first_name,e.last_name,s.starts_at`,[a.companyId,p.data.from,p.data.to]),
+      db.query(`select s.id,s.employee_id as "employeeId",e.employee_number as "employeeNumber",concat(e.first_name,' ',e.last_name) as "employeeName",s.branch_id as "branchId",b.name as "branchName",s.starts_at as "startsAt",s.ends_at as "endsAt",s.break_minutes as "breakMinutes" from shifts s join employees e on e.id=s.employee_id join branches b on b.id=s.branch_id where s.published=true and s.company_id=$1 and s.starts_at<$3::timestamptz and s.ends_at>$2::timestamptz order by e.first_name,e.last_name,s.starts_at`,[a.companyId,p.data.from,p.data.to]),
       db.query(`select ae.id,ae.employee_id as "employeeId",e.employee_number as "employeeNumber",concat(e.first_name,' ',e.last_name) as "employeeName",ae.branch_id as "branchId",b.name as "branchName",ae.shift_id as "shiftId",ae.action,ae.status,ae.occurred_at as "occurredAt",ae.source from attendance_events ae join employees e on e.id=ae.employee_id join branches b on b.id=ae.branch_id where ae.company_id=$1 and ae.occurred_at>=$2::timestamptz and ae.occurred_at<$3::timestamptz order by ae.employee_id,ae.occurred_at`,[a.companyId,lookback,lookahead])
     ]);
     const byShift=new Map<string,any[]>();
