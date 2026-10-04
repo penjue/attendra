@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import './styles.css';
+import { AttendanceQr } from './AttendanceQr';
 
 const env = (import.meta as any).env as Record<string, string | undefined>;
 const API_URL = env.VITE_API_URL ?? 'http://localhost:4000';
@@ -268,6 +269,7 @@ function App() {
   return <main className="kiosk">
     <div className="brand">Attendra</div>
     <p className="branch">{config.branchName} · Registered tablet</p>
+    <AttendanceQr config={config} api={API_URL} />
     <section className="card">
       <h1>Welcome</h1><p>Enter your employee number and PIN.</p>
       {activationError && <div className="notice error" role="alert">{activationError} This tablet remains registered to {config.branchName}.</div>}

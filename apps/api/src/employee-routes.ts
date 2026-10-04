@@ -3,6 +3,12 @@ import type { FastifyInstance } from 'fastify';
 import type { Pool } from 'pg';
 import { z } from 'zod';
 const hash=(value:string)=>createHash('sha256').update(value).digest('hex');
+export async function authenticateEmployee(db:Pick<Pool,'query'>,authorization:string|undefined):Promise<{employeeId:string;companyId:string}|null>{
+ const token=authorization?.startsWith('Bearer ')?authorization.slice(7):'';
+ if(!/^[A-Za-z0-9_-]{43}$/.test(token))return null;
+ const result=await db.query(`select e.id as "employeeId",e.company_id as "companyId" from employee_sessions s join employees e on e.id=s.employee_id and e.company_id=s.company_id where s.token_hash=$1 and s.expires_at>clock_timestamp() and e.active=true and s.credential_hash=encode(digest(e.pin_hash,'sha256'),'hex') limit 1`,[hash(token)]);
+ return result.rows[0]??null;
+}
 export function registerEmployeeRoutes(app:FastifyInstance, db:Pick<Pool,'query'>){
  const attempts=new Map<string,{count:number;expires:number}>();
  app.addHook('preHandler',async(request,reply)=>{
@@ -16,10 +22,9 @@ export function registerEmployeeRoutes(app:FastifyInstance, db:Pick<Pool,'query'
   state.count++;
  });
  const requireEmployee=async(req:any,reply:any)=>{
-  const token=String(req.headers.authorization||'').startsWith('Bearer ')?String(req.headers.authorization).slice(7):'';
-  if(!/^[A-Za-z0-9_-]{43}$/.test(token)){reply.code(401).send({ok:false,error:'EMPLOYEE_AUTH_REQUIRED'});return null}
-  const result=await db.query(`select e.id as "employeeId",e.company_id as "companyId" from employee_sessions s join employees e on e.id=s.employee_id and e.company_id=s.company_id where s.token_hash=$1 and s.expires_at>now() and e.active=true and s.credential_hash=encode(digest(e.pin_hash,'sha256'),'hex') limit 1`,[hash(token)]);
-  if(!result.rowCount){reply.code(401).send({ok:false,error:'EMPLOYEE_AUTH_REQUIRED'});return null}return result.rows[0];
+  const employee=await authenticateEmployee(db,req.headers.authorization);
+  if(!employee)reply.code(401).send({ok:false,error:'EMPLOYEE_AUTH_REQUIRED'});
+  return employee;
  };
 app.post('/v1/employee/login',async(req,reply)=>{const p=z.object({companyId:z.uuid(),employeeNumber:z.string().trim().min(1).max(64),pin:z.string().regex(/^\d{4,12}$/)}).safeParse(req.body);if(!p.success)return reply.code(400).send({ok:false,error:'INVALID_LOGIN_REQUEST'});const r=await db.query(`select e.id,e.employee_number as "employeeNumber",e.first_name as "firstName",e.last_name as "lastName",c.name as "companyName",e.pin_hash from employees e join companies c on c.id=e.company_id where e.company_id=$1 and e.employee_number=$2 and e.active=true and e.pin_hash=crypt($3,e.pin_hash) limit 1`,[p.data.companyId,p.data.employeeNumber,p.data.pin]);if(!r.rowCount)return reply.code(401).send({ok:false,error:'INVALID_EMPLOYEE_OR_PIN'});const {pin_hash,...e}=r.rows[0],exp=Date.now()+12*60*60*1000,token=randomBytes(32).toString('base64url');await db.query('delete from employee_sessions where expires_at<=now()');await db.query('insert into employee_sessions(token_hash,company_id,employee_id,credential_hash,expires_at) values($1,$2,$3,$4,$5)',[hash(token),p.data.companyId,e.id,hash(pin_hash),new Date(exp)]);return{ok:true,token,expiresAt:exp,employee:e}});
 app.get('/v1/employee/me',async(req,reply)=>{const a=await requireEmployee(req,reply);if(!a)return;const r=await db.query(`select e.id,e.employee_number as "employeeNumber",e.first_name as "firstName",e.last_name as "lastName",c.name as "companyName",c.timezone,c.currency from employees e join companies c on c.id=e.company_id where e.id=$1 and e.company_id=$2 and e.active=true limit 1`,[a.employeeId,a.companyId]);if(!r.rowCount)return reply.code(401).send({ok:false,error:'EMPLOYEE_AUTH_REQUIRED'});return{ok:true,employee:r.rows[0]}});
