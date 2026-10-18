@@ -1,3 +1,4 @@
+import { registerWorkManagementRoutes } from './work-management.js';
 import { registerSchedulingRoutes } from './scheduling.js';
 import { attendancePolicyError } from './attendance-policy.js';
 import Fastify from 'fastify';
@@ -11,6 +12,7 @@ import { db, pingDatabase } from './db.js';
 const app = Fastify({ logger: true });
 registerEmployeeRoutes(app, db);
 registerSchedulingRoutes(app, db);
+registerWorkManagementRoutes(app, db);
 registerEmployeeQrRoutes(app, db);
 const allowedOrigins = (process.env.CORS_ORIGIN ?? '')
   .split(',')
