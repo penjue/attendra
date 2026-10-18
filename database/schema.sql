@@ -357,6 +357,7 @@ FOR EACH ROW EXECUTE FUNCTION validate_employee_shift_attendance();
 CREATE UNIQUE INDEX IF NOT EXISTS employees_company_id_id_uidx ON employees(company_id,id);
 CREATE UNIQUE INDEX IF NOT EXISTS branches_company_id_id_uidx ON branches(company_id,id);
 CREATE UNIQUE INDEX IF NOT EXISTS shifts_company_id_id_uidx ON shifts(company_id,id);
+CREATE UNIQUE INDEX IF NOT EXISTS shifts_company_employee_id_uidx ON shifts(company_id,employee_id,id);
 
 CREATE TABLE IF NOT EXISTS employee_tasks (
  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -398,3 +399,17 @@ CREATE TABLE IF NOT EXISTS employee_incidents (
 );
 CREATE INDEX IF NOT EXISTS employee_incidents_company_idx ON employee_incidents(company_id,created_at DESC);
 CREATE INDEX IF NOT EXISTS employee_incidents_employee_idx ON employee_incidents(company_id,employee_id,created_at DESC);
+
+-- Also enforce shift ownership for existing installations where the work tables
+-- were created by an earlier version of this migration.
+DO $$
+BEGIN
+ IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname='employee_tasks_shift_owner_fk' AND conrelid='employee_tasks'::regclass) THEN
+  ALTER TABLE employee_tasks ADD CONSTRAINT employee_tasks_shift_owner_fk
+   FOREIGN KEY(company_id,employee_id,shift_id) REFERENCES shifts(company_id,employee_id,id);
+ END IF;
+ IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname='employee_incidents_shift_owner_fk' AND conrelid='employee_incidents'::regclass) THEN
+  ALTER TABLE employee_incidents ADD CONSTRAINT employee_incidents_shift_owner_fk
+   FOREIGN KEY(company_id,employee_id,shift_id) REFERENCES shifts(company_id,employee_id,id);
+ END IF;
+END $$;
