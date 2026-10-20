@@ -42,7 +42,22 @@ export function registerSchedulingRoutes(app:FastifyInstance,db:Pick<Pool,'query
  route('GET','/v1/admin/scheduling/patterns',async(_req,a)=>{const r=await db.query(`select p.id,p.employee_id as "employeeId",p.branch_id as "branchId",p.name,p.active,p.weekdays,p.start_time::text as "startTime",p.end_time::text as "endTime",p.break_minutes as "breakMinutes",concat(e.first_name,' ',e.last_name) as "employeeName",b.name as "branchName",b.timezone from shift_patterns p join employees e on e.id=p.employee_id join branches b on b.id=p.branch_id where p.company_id=$1 order by p.active desc,p.name,e.first_name`,[a.companyId]);return{ok:true,patterns:r.rows}});
  route('POST','/v1/admin/scheduling/patterns',async(req,a)=>{
   const p=z.object({name:z.string().trim().min(1).max(100),employeeIds:ids,branchId:z.uuid(),weekdays:z.array(z.number().int().min(1).max(7)).min(1).max(7),...times}).refine(validTimes,'End time must differ from start and the break must be shorter than the shift').parse(req.body);
-  return tx(async c=>{await lockEmployees(c,a.companyId,p.employeeIds);const branch=await c.query('select id from branches where id=$1 and company_id=$2 and active=true',[p.branchId,a.companyId]);if(!branch.rowCount)throw new ScheduleError('BRANCH_NOT_FOUND',404);const result=[];for(const employee of [...new Set(p.employeeIds)]){const r=await c.query(`insert into shift_patterns(company_id,employee_id,branch_id,name,weekdays,start_time,end_time,break_minutes) values($1,$2,$3,$4,$5,$6,$7,$8) returning id`,[a.companyId,employee,p.branchId,p.name,[...new Set(p.weekdays)],p.startTime,p.endTime,p.breakMinutes]);result.push(r.rows[0].id)}await audit(c,a,'CREATE_REPEATING_PATTERNS','BRANCH',p.branchId);return{ok:true,created:result.length}});
+  return tx(async c=>{await lockEmployees(c,a.companyId,p.employeeIds);const branch=await c.query('select id from branches where id=$1 and company_id=$2 and active=true',[p.branchId,a.companyId]);if(!branch.rowCount)throw new ScheduleError('BRANCH_NOT_FOUND',404);const result=[];for(const employee of [...new Set(p.employeeIds)]){
+   const existing=await c.query('SELECT weekdays,start_time::text AS start_time,end_time::text AS end_time,branch_id,break_minutes FROM shift_patterns WHERE company_id=$1 AND employee_id=$2 AND active=true',[a.companyId,employee]);
+   const minutes=(t:string)=>Number(t.slice(0,2))*60+Number(t.slice(3,5));
+   const spans=(days:number[],start:string,end:string)=>days.map(day=>{const from=(day-1)*1440+minutes(start);const duration=(minutes(end)-minutes(start)+1440)%1440;return [from,from+duration] as const});
+   const proposed=spans([...new Set(p.weekdays)],p.startTime,p.endTime);
+   for(const prior of existing.rows){
+    const old=spans(prior.weekdays,prior.start_time,prior.end_time);
+    const overlaps=proposed.some(([a,b])=>old.some(([x,y])=>[-10080,0,10080].some(offset=>a<y+offset&&b>x+offset)));
+    if(overlaps){
+     const same=prior.branch_id===p.branchId&&prior.break_minutes===p.breakMinutes&&
+      prior.start_time.slice(0,5)===p.startTime&&prior.end_time.slice(0,5)===p.endTime&&
+      [...prior.weekdays].sort().join(',')===[...new Set(p.weekdays)].sort().join(',');
+     throw new ScheduleError(same?'PATTERN_DUPLICATE':'PATTERN_OVERLAP',409);
+    }
+   }
+   const r=await c.query(`insert into shift_patterns(company_id,employee_id,branch_id,name,weekdays,start_time,end_time,break_minutes) values($1,$2,$3,$4,$5,$6,$7,$8) returning id`,[a.companyId,employee,p.branchId,p.name,[...new Set(p.weekdays)],p.startTime,p.endTime,p.breakMinutes]);result.push(r.rows[0].id)}await audit(c,a,'CREATE_REPEATING_PATTERNS','BRANCH',p.branchId);return{ok:true,created:result.length}});
  });
  route('DELETE','/v1/admin/scheduling/patterns/:patternId',async(req,a)=>tx(async c=>{const pattern=id(req,'patternId');const r=await c.query('update shift_patterns set active=false where id=$1 and company_id=$2 returning id',[pattern,a.companyId]);if(!r.rowCount)throw new ScheduleError('PATTERN_NOT_FOUND',404);await audit(c,a,'DISABLE_REPEATING_PATTERN','SHIFT_PATTERN',pattern);return{ok:true}}));
  route('DELETE','/v1/admin/scheduling/patterns/:patternId/permanent',async(req,a)=>tx(async c=>{
