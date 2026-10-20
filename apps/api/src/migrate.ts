@@ -54,6 +54,39 @@ try {
     }
   }
 
+  if (process.env.ATTENDRA_STAGING_ADMIN_INIT === 'true') {
+    const url = new URL(process.env.DATABASE_URL ?? '');
+    const expectedHost = 'dpg-dbajptdg1s2s73ccn61g-a';
+    const hostMatches = url.hostname === expectedHost || url.hostname.startsWith(expectedHost + '.');
+    const databaseMatches = decodeURIComponent(url.pathname.slice(1)) === 'attendra_staging_db';
+    const companyId = process.env.ADMIN_COMPANY_ID ?? '';
+    const email = (process.env.ADMIN_EMAIL ?? '').trim().toLowerCase();
+    const password = process.env.ADMIN_PASSWORD ?? '';
+    if (!hostMatches || !databaseMatches || !companyId || !email || password.length < 8) {
+      throw new Error('Refusing staging admin initialization: invalid staging configuration.');
+    }
+    const client = await db.connect();
+    try {
+      await client.query('BEGIN');
+      await client.query('SELECT pg_advisory_xact_lock(847362911)');
+      const company = await client.query('SELECT id FROM companies WHERE id=$1 AND name=$2', [companyId, 'Attendra Staging Test']);
+      if (!company.rowCount) throw new Error('Refusing staging admin initialization: unexpected company.');
+      const existing = await client.query('SELECT id FROM company_admins WHERE company_id=$1 AND lower(email)=lower($2) LIMIT 1', [companyId, email]);
+      if (existing.rowCount) {
+        await client.query("UPDATE company_admins SET password_hash=crypt($2,gen_salt('bf')), active=true WHERE id=$1", [existing.rows[0].id, password]);
+      } else {
+        await client.query("INSERT INTO company_admins(company_id,email,password_hash,role,active) VALUES ($1,$2,crypt($3,gen_salt('bf')),'OWNER',true)", [companyId, email, password]);
+      }
+      await client.query('COMMIT');
+      console.log('Staging admin initialized successfully.');
+    } catch (error) {
+      await client.query('ROLLBACK');
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+
   console.log('Attendra database schema is up to date.');
 } finally {
   await db.end();
