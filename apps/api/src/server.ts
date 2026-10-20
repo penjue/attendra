@@ -101,10 +101,6 @@ app.post('/v1/admin/login', async (request, reply) => {
   const emailMatches = safeEqual(parsed.data.email.trim().toLowerCase(), ADMIN_EMAIL.trim().toLowerCase());
   const passwordMatches = safeEqual(parsed.data.password, ADMIN_PASSWORD);
   if (!emailMatches || !passwordMatches) {
-    // Temporary staging-only diagnostic. Never log credential values or hashes.
-    if (process.env.ATTENDRA_STAGING_LOGIN_DIAGNOSTICS === 'true') {
-      request.log.warn({ emailMatches, passwordMatches }, 'Staging admin login credential comparison');
-    }
     return reply.code(401).send({ ok: false, error: 'INVALID_ADMIN_CREDENTIALS' });
   }
 
