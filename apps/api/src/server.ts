@@ -102,7 +102,7 @@ app.post('/v1/admin/login', async (request, reply) => {
   const passwordMatches = safeEqual(parsed.data.password, ADMIN_PASSWORD);
   if (!emailMatches || !passwordMatches) {
     // Temporary staging-only diagnostic. Never log credential values or hashes.
-    if ((process.env.DATABASE_URL ?? '').includes('attendra_staging_db')) {
+    if (process.env.RENDER_SERVICE_NAME === 'attendra-api-staging') {
       request.log.warn({ emailMatches, passwordMatches }, 'Staging admin login credential comparison');
     }
     return reply.code(401).send({ ok: false, error: 'INVALID_ADMIN_CREDENTIALS' });
