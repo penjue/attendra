@@ -45,6 +45,16 @@ export function registerSchedulingRoutes(app:FastifyInstance,db:Pick<Pool,'query
   return tx(async c=>{await lockEmployees(c,a.companyId,p.employeeIds);const branch=await c.query('select id from branches where id=$1 and company_id=$2 and active=true',[p.branchId,a.companyId]);if(!branch.rowCount)throw new ScheduleError('BRANCH_NOT_FOUND',404);const result=[];for(const employee of [...new Set(p.employeeIds)]){const r=await c.query(`insert into shift_patterns(company_id,employee_id,branch_id,name,weekdays,start_time,end_time,break_minutes) values($1,$2,$3,$4,$5,$6,$7,$8) returning id`,[a.companyId,employee,p.branchId,p.name,[...new Set(p.weekdays)],p.startTime,p.endTime,p.breakMinutes]);result.push(r.rows[0].id)}await audit(c,a,'CREATE_REPEATING_PATTERNS','BRANCH',p.branchId);return{ok:true,created:result.length}});
  });
  route('DELETE','/v1/admin/scheduling/patterns/:patternId',async(req,a)=>tx(async c=>{const pattern=id(req,'patternId');const r=await c.query('update shift_patterns set active=false where id=$1 and company_id=$2 returning id',[pattern,a.companyId]);if(!r.rowCount)throw new ScheduleError('PATTERN_NOT_FOUND',404);await audit(c,a,'DISABLE_REPEATING_PATTERN','SHIFT_PATTERN',pattern);return{ok:true}}));
+ route('DELETE','/v1/admin/scheduling/patterns/:patternId/permanent',async(req,a)=>tx(async c=>{
+  const pattern=id(req,'patternId');
+  const found=await c.query('SELECT id FROM shift_patterns WHERE id=$1 AND company_id=$2 FOR UPDATE',[pattern,a.companyId]);
+  if(!found.rowCount)throw new ScheduleError('PATTERN_NOT_FOUND',404);
+  const linked=await c.query('SELECT 1 FROM shifts WHERE pattern_id=$1 LIMIT 1',[pattern]);
+  if(linked.rowCount)throw new ScheduleError('PATTERN_HAS_SHIFTS',409);
+  await c.query('DELETE FROM shift_patterns WHERE id=$1 AND company_id=$2',[pattern,a.companyId]);
+  await audit(c,a,'DELETE_UNUSED_REPEATING_PATTERN','SHIFT_PATTERN',pattern);
+  return {ok:true};
+ }));
  route('POST','/v1/admin/scheduling/generate',async(req,a)=>{
   const p=rangeSchema.safeExtend({patternIds:z.array(z.uuid()).min(1).max(1000)}).parse(req.body);
   return tx(async c=>{
