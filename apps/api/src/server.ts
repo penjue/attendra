@@ -98,7 +98,13 @@ app.post('/v1/admin/login', async (request, reply) => {
     return reply.code(503).send({ ok: false, error: 'ADMIN_NOT_CONFIGURED' });
   }
 
-  if (!safeEqual(parsed.data.email.trim().toLowerCase(), ADMIN_EMAIL.trim().toLowerCase()) || !safeEqual(parsed.data.password, ADMIN_PASSWORD)) {
+  const emailMatches = safeEqual(parsed.data.email.trim().toLowerCase(), ADMIN_EMAIL.trim().toLowerCase());
+  const passwordMatches = safeEqual(parsed.data.password, ADMIN_PASSWORD);
+  if (!emailMatches || !passwordMatches) {
+    // Temporary staging-only diagnostic. Never log credential values or hashes.
+    if ((process.env.DATABASE_URL ?? '').includes('attendra_staging_db')) {
+      request.log.warn({ emailMatches, passwordMatches }, 'Staging admin login credential comparison');
+    }
     return reply.code(401).send({ ok: false, error: 'INVALID_ADMIN_CREDENTIALS' });
   }
 
