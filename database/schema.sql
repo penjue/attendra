@@ -255,6 +255,9 @@ CREATE TABLE IF NOT EXISTS employee_schedule_profiles (
  max_weekly_hours numeric NOT NULL DEFAULT 40 CHECK (max_weekly_hours>0 AND max_weekly_hours<=168),
  allowed_branch_ids uuid[] NOT NULL DEFAULT '{}'
 );
+ALTER TABLE employee_schedule_profiles ADD COLUMN IF NOT EXISTS pay_type text NOT NULL DEFAULT 'salary';
+ALTER TABLE employee_schedule_profiles ADD COLUMN IF NOT EXISTS monthly_target_hours numeric NOT NULL DEFAULT 173.33;
+ALTER TABLE employee_schedule_profiles ADD COLUMN IF NOT EXISTS allocation_priority integer NOT NULL DEFAULT 3;
 CREATE TABLE IF NOT EXISTS shift_patterns (
  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
  company_id uuid NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
