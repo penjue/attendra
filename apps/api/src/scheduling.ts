@@ -194,6 +194,25 @@ export function registerSchedulingRoutes(app:FastifyInstance,db:Pick<Pool,'query
   await audit(c,a,'REMOVE_FUTURE_SHIFT','SHIFT',shift);
   return{ok:true};
  }));
+ route('POST','/v1/admin/scheduling/undo-week-drafts',async(req,a)=>{
+  const p=z.object({from:z.iso.date(),branchId:z.uuid().optional()}).parse(req.body);
+  const start=new Date(p.from+'T00:00:00Z');
+  if(Number.isNaN(start.getTime())||start.getUTCDay()!==1)throw new ScheduleError('WEEK_MUST_START_MONDAY',400);
+  const to=new Date(start.getTime()+7*86400000).toISOString().slice(0,10);
+  return tx(async c=>{
+   const found=await c.query(`select s.id,s.employee_id from shifts s join branches b on b.id=s.branch_id
+    where s.company_id=$1 and s.published=false and (s.starts_at at time zone b.timezone)::date >= $2::date
+    and (s.starts_at at time zone b.timezone)::date < $3::date
+    and ($4::uuid is null or s.branch_id=$4::uuid)
+    and not exists(select 1 from attendance_events ae where ae.shift_id=s.id)
+    order by s.id for update of s`,[a.companyId,p.from,to,p.branchId??null]);
+   if(found.rowCount){
+    await c.query('delete from shifts where company_id=$1 and id=ANY($2::uuid[]) and published=false',[a.companyId,found.rows.map(x=>x.id)]);
+   }
+   await audit(c,a,'UNDO_WEEK_DRAFTS','COMPANY',a.companyId);
+   return{ok:true,deleted:found.rowCount??0};
+  });
+ });
  route('POST','/v1/admin/scheduling/publish',async(req,a)=>{
   const p=z.object({shiftIds:ids}).parse(req.body);return tx(async c=>{const r=await c.query('select id,employee_id,starts_at,ends_at from shifts where company_id=$1 and id=ANY($2::uuid[]) and published=false order by id',[a.companyId,[...new Set(p.shiftIds)]]);if(r.rowCount!==new Set(p.shiftIds).size)throw new ScheduleError('DRAFT_NOT_FOUND');await lockEmployees(c,a.companyId,r.rows.map(r=>r.employee_id));const locked=await c.query('select id,employee_id,starts_at from shifts where company_id=$1 and id=ANY($2::uuid[]) and published=false order by id for update',[a.companyId,[...new Set(p.shiftIds)]]);if(locked.rowCount!==r.rowCount||locked.rows.some(s=>!r.rows.some(x=>x.id===s.id&&x.employee_id===s.employee_id)))throw new ScheduleError('SCHEDULE_CHANGED_RETRY');for(const s of locked.rows){if(new Date(s.starts_at).getTime()<Date.now())throw new ScheduleError('SHIFT_IN_PAST');await c.query('update shifts set published=true where id=$1 and company_id=$2',[s.id,a.companyId])}for(const employee of new Set<string>(r.rows.map(r=>r.employee_id)))await notice(c,a.companyId,employee,'Your manager published new shifts. Check your schedule.');await audit(c,a,'PUBLISH_SCHEDULE','COMPANY',a.companyId);return{ok:true,published:r.rowCount}});
  });
