@@ -1,7 +1,7 @@
 name: CI
 on:
   push:
-    branches: [Main, develop]
+    branches: [Main, develop, feat/employee-tasks-incidents]
   pull_request:
     branches: [Main, develop]
 jobs:
