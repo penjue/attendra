@@ -84,6 +84,32 @@ export function registerSchedulingRoutes(app:FastifyInstance,db:Pick<Pool,'query
    await audit(c,a,'GENERATE_DRAFT_SCHEDULE','COMPANY',a.companyId);return{ok:true,created,existing,conflicts,needsCover};
   });
  });
+ route('PUT','/v1/admin/scheduling/shifts/:shiftId/draft',async(req,a)=>{
+  const shift=id(req,'shiftId');
+  const p=z.object({employeeId:z.uuid(),branchId:z.uuid(),date:z.iso.date(),...times}).refine(validTimes,'Break must be shorter than the shift; start and end must differ').parse(req.body);
+  return tx(async c=>{
+   const found=await c.query('select * from shifts where id=$1 and company_id=$2',[shift,a.companyId]);
+   if(!found.rowCount)throw new ScheduleError('SHIFT_NOT_FOUND',404);
+   const original=found.rows[0];
+   if(original.published)throw new ScheduleError('DRAFT_NOT_FOUND');
+   await lockEmployees(c,a.companyId,[original.employee_id,p.employeeId]);
+   const locked=await c.query('select * from shifts where id=$1 and company_id=$2 for update',[shift,a.companyId]);
+   if(!locked.rowCount||locked.rows[0].published||locked.rows[0].employee_id!==original.employee_id)throw new ScheduleError('SCHEDULE_CHANGED_RETRY');
+   const attendance=await c.query('select 1 from attendance_events where shift_id=$1 limit 1',[shift]);
+   if(attendance.rowCount)throw new ScheduleError('SHIFT_HAS_ATTENDANCE');
+   const b=await c.query(`select ($3::date+$4::time) at time zone timezone as start,($3::date+case when $5::time<=$4::time then 1 else 0 end+$5::time) at time zone timezone as "end" from branches where id=$1 and company_id=$2 and active=true`,[p.branchId,a.companyId,p.date,p.startTime,p.endTime]);
+   if(!b.rowCount)throw new ScheduleError('BRANCH_NOT_FOUND',404);
+   const start=new Date(b.rows[0].start),end=new Date(b.rows[0].end);
+   if(start.getTime()<Date.now())throw new ScheduleError('SHIFT_IN_PAST');
+   const conflict=await checkAssignment(c,a.companyId,p.employeeId,p.branchId,start,end,shift);
+   if(conflict&&conflict!=='EMPLOYEE_UNAVAILABLE')throw new ScheduleError(conflict);
+   const weekly=await c.query(`select coalesce(p.max_weekly_hours,40)::float as "limit",coalesce(sum(greatest(0,extract(epoch from(x.ends_at-x.starts_at))/3600-x.break_minutes/60.0)),0)::float as hours from companies co left join employee_schedule_profiles p on p.company_id=co.id and p.employee_id=$2 left join shifts x on x.company_id=co.id and x.employee_id=$2 and x.id<>$4 and x.starts_at>=date_trunc('week',$3::timestamptz at time zone co.timezone) at time zone co.timezone and x.starts_at<(date_trunc('week',$3::timestamptz at time zone co.timezone)+interval '7 days') at time zone co.timezone where co.id=$1 group by p.max_weekly_hours`,[a.companyId,p.employeeId,start,shift]);
+   if(Number(weekly.rows[0].hours)+netShiftHours(start,end,p.breakMinutes)>Number(weekly.rows[0].limit))throw new ScheduleError('WEEKLY_HOURS_EXCEEDED');
+   await c.query('update shifts set employee_id=$1,branch_id=$2,starts_at=$3,ends_at=$4,break_minutes=$5 where id=$6 and company_id=$7',[p.employeeId,p.branchId,start,end,p.breakMinutes,shift,a.companyId]);
+   await audit(c,a,'EDIT_DRAFT_SHIFT','SHIFT',shift);
+   return{ok:true};
+  });
+ });
  route('POST','/v1/admin/scheduling/publish',async(req,a)=>{
   const p=z.object({shiftIds:ids}).parse(req.body);return tx(async c=>{const r=await c.query('select id,employee_id,starts_at,ends_at from shifts where company_id=$1 and id=ANY($2::uuid[]) and published=false order by id',[a.companyId,[...new Set(p.shiftIds)]]);if(r.rowCount!==new Set(p.shiftIds).size)throw new ScheduleError('DRAFT_NOT_FOUND');await lockEmployees(c,a.companyId,r.rows.map(r=>r.employee_id));const locked=await c.query('select id,employee_id,starts_at from shifts where company_id=$1 and id=ANY($2::uuid[]) and published=false order by id for update',[a.companyId,[...new Set(p.shiftIds)]]);if(locked.rowCount!==r.rowCount||locked.rows.some(s=>!r.rows.some(x=>x.id===s.id&&x.employee_id===s.employee_id)))throw new ScheduleError('SCHEDULE_CHANGED_RETRY');for(const s of locked.rows){if(new Date(s.starts_at).getTime()<Date.now())throw new ScheduleError('SHIFT_IN_PAST');await c.query('update shifts set published=true where id=$1 and company_id=$2',[s.id,a.companyId])}for(const employee of new Set<string>(r.rows.map(r=>r.employee_id)))await notice(c,a.companyId,employee,'Your manager published new shifts. Check your schedule.');await audit(c,a,'PUBLISH_SCHEDULE','COMPANY',a.companyId);return{ok:true,published:r.rowCount}});
  });
