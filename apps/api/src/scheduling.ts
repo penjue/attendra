@@ -88,8 +88,8 @@ export function registerSchedulingRoutes(app:FastifyInstance,db:Pick<Pool,'query
     const slot=await c.query(`select ($2::date+$3::time) at time zone timezone as start,($2::date+case when $4::time<=$3::time then 1 else 0 end+$4::time) at time zone timezone as "end" from branches where id=$1`,[p.branchId,day,p.startTime,p.endTime]);
     const start=new Date(slot.rows[0].start),end=new Date(slot.rows[0].end);
     const already=await c.query('select employee_id from shifts where company_id=$1 and branch_id=$2 and starts_at<$4 and ends_at>$3',[a.companyId,p.branchId,start,end]);
-    existing+=already.rowCount;
-    let needed=Math.max(0,p.staffing[i]-already.rowCount);
+    existing+=(already.rowCount??0);
+    let needed=Math.max(0,p.staffing[i]-(already.rowCount??0));
     if(start.getTime()<Date.now()){if(needed)unmet.push({day,needed,reason:'SHIFT_IN_PAST'});continue}
     const ranked=[...ordered].sort((x,y)=>(assigned.get(x.employeeId)!-assigned.get(y.employeeId)!)||x.employeeId.localeCompare(y.employeeId));
     for(const worker of ranked){
