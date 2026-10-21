@@ -81,6 +81,10 @@ export function registerSchedulingRoutes(app:FastifyInstance,db:Pick<Pool,'query
    const lookup=new Map<string,any>(employees.rows.map(e=>[e.id,e]));
    const hours=netShiftHours(new Date('2026-01-01T'+p.startTime+':00Z'),new Date('2026-01-01T'+p.endTime+':00Z').getTime()<=new Date('2026-01-01T'+p.startTime+':00Z').getTime()?new Date('2026-01-02T'+p.endTime+':00Z'):new Date('2026-01-01T'+p.endTime+':00Z'),p.breakMinutes);
    const assigned=new Map<string,number>(p.employees.map(e=>[e.employeeId,0]));
+   // Include pre-existing assignments in the fairness calculation; don't treat this run in isolation.
+   const weekEnd=new Date(startDate.getTime()+7*86400000).toISOString().slice(0,10);
+   const priorWeek=await c.query(`select s.employee_id,count(*)::int as shifts from shifts s join branches b on b.id=s.branch_id where s.company_id=$1 and s.branch_id=$2 and (s.starts_at at time zone b.timezone)::date >= $3::date and (s.starts_at at time zone b.timezone)::date < $4::date group by s.employee_id`,[a.companyId,p.branchId,p.from,weekEnd]);
+   for(const row of priorWeek.rows)if(assigned.has(row.employee_id))assigned.set(row.employee_id,Number(row.shifts));
    const unmet:any[]=[];let created=0,existing=0;
    const ordered=p.employees.map(e=>({...e,daysOff:new Set(e.daysOff),cap:Math.min(e.maxWeeklyHours,Number(lookup.get(e.employeeId)?.max_hours||40))}));
    for(let i=0;i<7;i++){
@@ -89,6 +93,7 @@ export function registerSchedulingRoutes(app:FastifyInstance,db:Pick<Pool,'query
     const start=new Date(slot.rows[0].start),end=new Date(slot.rows[0].end);
     const already=await c.query('select employee_id from shifts where company_id=$1 and branch_id=$2 and starts_at<$4 and ends_at>$3',[a.companyId,p.branchId,start,end]);
     existing+=(already.rowCount??0);
+    if((already.rowCount??0)>p.staffing[i])unmet.push({day,needed:0,excess:(already.rowCount??0)-p.staffing[i],reason:'EXCESS_EXISTING_SHIFTS'});
     let needed=Math.max(0,p.staffing[i]-(already.rowCount??0));
     if(start.getTime()<Date.now()){if(needed)unmet.push({day,needed,reason:'SHIFT_IN_PAST'});continue}
     const ranked=[...ordered].sort((x,y)=>(assigned.get(x.employeeId)!-assigned.get(y.employeeId)!)||x.employeeId.localeCompare(y.employeeId));
