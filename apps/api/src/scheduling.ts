@@ -70,6 +70,46 @@ export function registerSchedulingRoutes(app:FastifyInstance,db:Pick<Pool,'query
   await audit(c,a,'DELETE_UNUSED_REPEATING_PATTERN','SHIFT_PATTERN',pattern);
   return {ok:true};
  }));
+ route('POST','/v1/admin/scheduling/balanced-drafts',async(req,a)=>{
+  const p=z.object({branchId:z.uuid(),from:z.iso.date(),staffing:z.array(z.number().int().min(0).max(100)).length(7),employees:z.array(z.object({employeeId:z.uuid(),daysOff:z.array(z.number().int().min(1).max(7)).max(7),maxWeeklyHours:z.number().min(1).max(168)})).min(1).max(100),...times}).refine(validTimes,'Invalid shift or break duration').parse(req.body);
+  if(new Set(p.employees.map(e=>e.employeeId)).size!==p.employees.length)throw new ScheduleError('DUPLICATE_EMPLOYEE',400);
+  const startDate=new Date(p.from+'T00:00:00Z');if(Number.isNaN(startDate.getTime())||startDate.getUTCDay()!==1)throw new ScheduleError('WEEK_MUST_START_MONDAY',400);
+  return tx(async c=>{
+   await lockEmployees(c,a.companyId,p.employees.map(e=>e.employeeId));
+   const b=await c.query('select id,timezone from branches where id=$1 and company_id=$2 and active=true',[p.branchId,a.companyId]);if(!b.rowCount)throw new ScheduleError('BRANCH_NOT_FOUND',404);
+   const employees=await c.query('select e.id,coalesce(sp.max_weekly_hours,40)::float as max_hours,coalesce(sp.allowed_branch_ids,\'{}\'::uuid[]) as allowed_branches from employees e left join employee_schedule_profiles sp on sp.employee_id=e.id and sp.company_id=e.company_id where e.company_id=$1 and e.id=ANY($2::uuid[])',[a.companyId,p.employees.map(e=>e.employeeId)]);
+   const lookup=new Map<string,any>(employees.rows.map(e=>[e.id,e]));
+   const hours=netShiftHours(new Date('2026-01-01T'+p.startTime+':00Z'),new Date('2026-01-01T'+p.endTime+':00Z').getTime()<=new Date('2026-01-01T'+p.startTime+':00Z').getTime()?new Date('2026-01-02T'+p.endTime+':00Z'):new Date('2026-01-01T'+p.endTime+':00Z'),p.breakMinutes);
+   const assigned=new Map<string,number>(p.employees.map(e=>[e.employeeId,0]));
+   const unmet:any[]=[];let created=0,existing=0;
+   const ordered=p.employees.map(e=>({...e,daysOff:new Set(e.daysOff),cap:Math.min(e.maxWeeklyHours,Number(lookup.get(e.employeeId)?.max_hours||40))}));
+   for(let i=0;i<7;i++){
+    const day=new Date(startDate.getTime()+i*86400000).toISOString().slice(0,10);
+    const slot=await c.query(`select ($2::date+$3::time) at time zone timezone as start,($2::date+case when $4::time<=$3::time then 1 else 0 end+$4::time) at time zone timezone as "end" from branches where id=$1`,[p.branchId,day,p.startTime,p.endTime]);
+    const start=new Date(slot.rows[0].start),end=new Date(slot.rows[0].end);
+    const already=await c.query('select employee_id from shifts where company_id=$1 and branch_id=$2 and starts_at<$4 and ends_at>$3',[a.companyId,p.branchId,start,end]);
+    existing+=already.rowCount;
+    let needed=Math.max(0,p.staffing[i]-already.rowCount);
+    if(start.getTime()<Date.now()){if(needed)unmet.push({day,needed,reason:'SHIFT_IN_PAST'});continue}
+    const ranked=[...ordered].sort((x,y)=>(assigned.get(x.employeeId)!-assigned.get(y.employeeId)!)||x.employeeId.localeCompare(y.employeeId));
+    for(const worker of ranked){
+     if(!needed)break;
+     if(worker.daysOff.has(i+1))continue;
+     const info=lookup.get(worker.employeeId);
+     if(info?.allowed_branches?.length&&!info.allowed_branches.includes(p.branchId))continue;
+     if((assigned.get(worker.employeeId)||0)*hours+hours>worker.cap)continue;
+     const conflict=await checkAssignment(c,a.companyId,worker.employeeId,p.branchId,start,end);
+     if(conflict)continue;
+     if(await checkHours(c,a.companyId,worker.employeeId,start,hours))continue;
+     await c.query('insert into shifts(company_id,employee_id,branch_id,starts_at,ends_at,break_minutes,published) values($1,$2,$3,$4,$5,$6,false)',[a.companyId,worker.employeeId,p.branchId,start,end,p.breakMinutes]);
+     assigned.set(worker.employeeId,(assigned.get(worker.employeeId)||0)+1);created++;needed--;
+    }
+    if(needed)unmet.push({day,needed,reason:'INSUFFICIENT_ELIGIBLE_STAFF'});
+   }
+   await audit(c,a,'GENERATE_BALANCED_DRAFT_SCHEDULE','BRANCH',p.branchId);
+   return{ok:true,created,existing,unmet,allocations:[...assigned].map(([employeeId,shifts])=>({employeeId,shifts}))};
+  });
+ });
  route('POST','/v1/admin/scheduling/generate',async(req,a)=>{
   const p=rangeSchema.safeExtend({patternIds:z.array(z.uuid()).min(1).max(1000)}).parse(req.body);
   return tx(async c=>{
