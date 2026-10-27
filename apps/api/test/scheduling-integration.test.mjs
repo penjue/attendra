@@ -75,7 +75,7 @@ test('PostgreSQL scheduling: migrations, isolation, drafts, exceptions, cover an
   });
   await t.test('stopping patterns and deleting exceptions preserves generated shifts',async()=>{
    await success('DELETE',`patterns/${patternId}`);await success('DELETE',`unavailability/${absenceId}`);
-   assert.equal((await success('GET','patterns')).patterns.length,0);assert.equal((await pool.query('select id from shifts where id=$1',[shiftId])).rowCount,1);
+   const stopped=(await success('GET','patterns')).patterns;assert.equal(stopped.filter(p=>p.active).length,0);assert.equal(stopped.find(p=>p.id===patternId)?.active,false);assert.equal((await pool.query('select id from shifts where id=$1',[shiftId])).rowCount,1);
   });
  }finally{
   await app.close();

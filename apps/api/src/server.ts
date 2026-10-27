@@ -1,3 +1,4 @@
+import { registerWorkManagementRoutes } from './work-management.js';
 import { registerSchedulingRoutes } from './scheduling.js';
 import { attendancePolicyError } from './attendance-policy.js';
 import Fastify from 'fastify';
@@ -11,6 +12,7 @@ import { db, pingDatabase } from './db.js';
 const app = Fastify({ logger: true });
 registerEmployeeRoutes(app, db);
 registerSchedulingRoutes(app, db);
+registerWorkManagementRoutes(app, db);
 registerEmployeeQrRoutes(app, db);
 const allowedOrigins = (process.env.CORS_ORIGIN ?? '')
   .split(',')
@@ -96,7 +98,9 @@ app.post('/v1/admin/login', async (request, reply) => {
     return reply.code(503).send({ ok: false, error: 'ADMIN_NOT_CONFIGURED' });
   }
 
-  if (!safeEqual(parsed.data.email.trim().toLowerCase(), ADMIN_EMAIL.trim().toLowerCase()) || !safeEqual(parsed.data.password, ADMIN_PASSWORD)) {
+  const emailMatches = safeEqual(parsed.data.email.trim().toLowerCase(), ADMIN_EMAIL.trim().toLowerCase());
+  const passwordMatches = safeEqual(parsed.data.password, ADMIN_PASSWORD);
+  if (!emailMatches || !passwordMatches) {
     return reply.code(401).send({ ok: false, error: 'INVALID_ADMIN_CREDENTIALS' });
   }
 

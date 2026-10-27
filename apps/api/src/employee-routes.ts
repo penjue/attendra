@@ -32,4 +32,45 @@ app.get('/v1/employee/shifts',async(req,reply)=>{const a=await requireEmployee(r
 
 
 app.post('/v1/employee/logout',async(req)=>{const token=String(req.headers.authorization||'').startsWith('Bearer ')?String(req.headers.authorization).slice(7):'';if(/^[A-Za-z0-9_-]{43}$/.test(token))await db.query('delete from employee_sessions where token_hash=$1',[hash(token)]);return{ok:true}});
+
+const taskStatus=z.object({status:z.enum(['IN_PROGRESS','COMPLETED'])});
+const incidentBody=z.object({
+ category:z.enum(['SAFETY','INJURY','EQUIPMENT','SECURITY','OTHER']),
+ description:z.string().trim().min(10).max(4000),
+ occurredAt:z.iso.datetime({offset:true}),
+ shiftId:z.uuid().optional()
+});
+const idParam=z.object({id:z.uuid()});
+app.get('/v1/employee/tasks',async(req,reply)=>{
+ const a=await requireEmployee(req,reply);if(!a)return;
+ const r=await db.query(`select id,title,description,due_at as "dueAt",status,created_at as "createdAt",completed_at as "completedAt" from employee_tasks where company_id=$1 and employee_id=$2 order by created_at desc limit 100`,[a.companyId,a.employeeId]);
+ return {ok:true,tasks:r.rows};
+});
+app.patch('/v1/employee/tasks/:id/status',async(req,reply)=>{
+ const a=await requireEmployee(req,reply);if(!a)return;
+ const p=idParam.safeParse(req.params),b=taskStatus.safeParse(req.body);
+ if(!p.success||!b.success)return reply.code(400).send({ok:false,error:'INVALID_TASK_UPDATE'});
+ const r=await db.query(`update employee_tasks set status=$3,updated_at=now(),completed_at=case when $3='COMPLETED' then now() else null end where id=$4 and company_id=$1 and employee_id=$2 and status in ('PENDING','IN_PROGRESS') and (status='PENDING' or $3='COMPLETED') returning id,status,completed_at as "completedAt"`,[a.companyId,a.employeeId,b.data.status,p.data.id]);
+ if(!r.rowCount)return reply.code(404).send({ok:false,error:'TASK_NOT_FOUND_OR_NOT_EDITABLE'});
+ return {ok:true,task:r.rows[0]};
+});
+app.get('/v1/employee/incidents',async(req,reply)=>{
+ const a=await requireEmployee(req,reply);if(!a)return;
+ const r=await db.query(`select id,category,description,occurred_at as "occurredAt",status,created_at as "createdAt" from employee_incidents where company_id=$1 and employee_id=$2 order by created_at desc limit 100`,[a.companyId,a.employeeId]);
+ return {ok:true,incidents:r.rows};
+});
+app.post('/v1/employee/incidents',async(req,reply)=>{
+ const a=await requireEmployee(req,reply);if(!a)return;
+ const b=incidentBody.safeParse(req.body);
+ if(!b.success)return reply.code(400).send({ok:false,error:'INVALID_INCIDENT'});
+ const occurred=new Date(b.data.occurredAt);
+ if(occurred.getTime()>Date.now()+300000||occurred.getTime()<Date.now()-366*86400000)return reply.code(400).send({ok:false,error:'INVALID_OCCURRENCE_TIME'});
+ if(b.data.shiftId){
+  const check=await db.query('select id from shifts where id=$1 and company_id=$2 and employee_id=$3 limit 1',[b.data.shiftId,a.companyId,a.employeeId]);
+  if(!check.rowCount)return reply.code(400).send({ok:false,error:'INVALID_SHIFT'});
+ }
+ const r=await db.query(`insert into employee_incidents(company_id,employee_id,shift_id,category,description,occurred_at) values($1,$2,$3,$4,$5,$6) returning id,status,created_at as "createdAt"`,[a.companyId,a.employeeId,b.data.shiftId??null,b.data.category,b.data.description,occurred]);
+ return reply.code(201).send({ok:true,incident:r.rows[0]});
+});
+
 }

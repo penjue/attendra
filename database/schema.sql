@@ -255,6 +255,9 @@ CREATE TABLE IF NOT EXISTS employee_schedule_profiles (
  max_weekly_hours numeric NOT NULL DEFAULT 40 CHECK (max_weekly_hours>0 AND max_weekly_hours<=168),
  allowed_branch_ids uuid[] NOT NULL DEFAULT '{}'
 );
+ALTER TABLE employee_schedule_profiles ADD COLUMN IF NOT EXISTS pay_type text NOT NULL DEFAULT 'salary';
+ALTER TABLE employee_schedule_profiles ADD COLUMN IF NOT EXISTS monthly_target_hours numeric NOT NULL DEFAULT 173.33;
+ALTER TABLE employee_schedule_profiles ADD COLUMN IF NOT EXISTS allocation_priority integer NOT NULL DEFAULT 3;
 CREATE TABLE IF NOT EXISTS shift_patterns (
  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
  company_id uuid NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
@@ -351,3 +354,65 @@ $$ LANGUAGE plpgsql;
 DROP TRIGGER IF EXISTS trg_validate_employee_shift_attendance ON attendance_events;
 CREATE TRIGGER trg_validate_employee_shift_attendance BEFORE INSERT ON attendance_events
 FOR EACH ROW EXECUTE FUNCTION validate_employee_shift_attendance();
+
+
+-- Employee work management: tenant-scoped relational integrity.
+CREATE UNIQUE INDEX IF NOT EXISTS employees_company_id_id_uidx ON employees(company_id,id);
+CREATE UNIQUE INDEX IF NOT EXISTS branches_company_id_id_uidx ON branches(company_id,id);
+CREATE UNIQUE INDEX IF NOT EXISTS shifts_company_id_id_uidx ON shifts(company_id,id);
+CREATE UNIQUE INDEX IF NOT EXISTS shifts_company_employee_id_uidx ON shifts(company_id,employee_id,id);
+
+CREATE TABLE IF NOT EXISTS employee_tasks (
+ id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+ company_id uuid NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+ employee_id uuid NOT NULL,
+ branch_id uuid,
+ shift_id uuid,
+ title varchar(160) NOT NULL CHECK(length(btrim(title))>0),
+ description text NOT NULL DEFAULT '' CHECK(length(description)<=4000),
+ due_at timestamptz,
+ status text NOT NULL DEFAULT 'PENDING' CHECK(status IN ('PENDING','IN_PROGRESS','COMPLETED','CANCELLED')),
+ created_at timestamptz NOT NULL DEFAULT now(),
+ updated_at timestamptz NOT NULL DEFAULT now(),
+ completed_at timestamptz,
+ FOREIGN KEY(company_id,employee_id) REFERENCES employees(company_id,id),
+ FOREIGN KEY(company_id,branch_id) REFERENCES branches(company_id,id),
+ FOREIGN KEY(company_id,shift_id) REFERENCES shifts(company_id,id),
+ CHECK ((status='COMPLETED')=(completed_at IS NOT NULL))
+);
+CREATE INDEX IF NOT EXISTS employee_tasks_assignee_idx ON employee_tasks(company_id,employee_id,created_at DESC);
+CREATE INDEX IF NOT EXISTS employee_tasks_status_idx ON employee_tasks(company_id,status,due_at);
+
+CREATE TABLE IF NOT EXISTS employee_incidents (
+ id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+ company_id uuid NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+ employee_id uuid NOT NULL,
+ branch_id uuid,
+ shift_id uuid,
+ category text NOT NULL CHECK(category IN ('SAFETY','INJURY','EQUIPMENT','SECURITY','OTHER')),
+ description text NOT NULL CHECK(length(btrim(description)) BETWEEN 10 AND 4000),
+ occurred_at timestamptz NOT NULL,
+ status text NOT NULL DEFAULT 'SUBMITTED' CHECK(status IN ('SUBMITTED','UNDER_REVIEW','RESOLVED')),
+ created_at timestamptz NOT NULL DEFAULT now(),
+ reviewed_at timestamptz,
+ reviewed_by text,
+ FOREIGN KEY(company_id,employee_id) REFERENCES employees(company_id,id),
+ FOREIGN KEY(company_id,branch_id) REFERENCES branches(company_id,id),
+ FOREIGN KEY(company_id,shift_id) REFERENCES shifts(company_id,id)
+);
+CREATE INDEX IF NOT EXISTS employee_incidents_company_idx ON employee_incidents(company_id,created_at DESC);
+CREATE INDEX IF NOT EXISTS employee_incidents_employee_idx ON employee_incidents(company_id,employee_id,created_at DESC);
+
+-- Also enforce shift ownership for existing installations where the work tables
+-- were created by an earlier version of this migration.
+DO $$
+BEGIN
+ IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname='employee_tasks_shift_owner_fk' AND conrelid='employee_tasks'::regclass) THEN
+  ALTER TABLE employee_tasks ADD CONSTRAINT employee_tasks_shift_owner_fk
+   FOREIGN KEY(company_id,employee_id,shift_id) REFERENCES shifts(company_id,employee_id,id);
+ END IF;
+ IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname='employee_incidents_shift_owner_fk' AND conrelid='employee_incidents'::regclass) THEN
+  ALTER TABLE employee_incidents ADD CONSTRAINT employee_incidents_shift_owner_fk
+   FOREIGN KEY(company_id,employee_id,shift_id) REFERENCES shifts(company_id,employee_id,id);
+ END IF;
+END $$;
