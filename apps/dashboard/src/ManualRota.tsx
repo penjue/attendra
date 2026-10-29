@@ -38,7 +38,7 @@ export function ManualRota({api,token,employees,branches}:{api:string;token:stri
   }catch{}
  },[recoveryReady,api,period,branch,anchor,draftShifts,endMode,endDate]);
  const discardUnsaved=()=>{setDraftShifts([]);setEditingIndex(null);setRestoreNotice(false);try{sessionStorage.removeItem(storageKey)}catch{}setMessage('Unfinished rota discarded.')};
- const call=async(path:string,method='GET',body?:unknown)=>{const r=await fetch(`${api}/v1/admin/${path}`,{method,headers:{Authorization:`Bearer ${token}`,'Content-Type':'application/json'},body:body===undefined?undefined:JSON.stringify(body)});const d=await r.json();if(!r.ok)throw Error(d.skipped?.length?`${d.error}: ${d.skipped.join(', ')}. Resolve conflicts and retry.`:(d.error||'Request failed'));return d};
+ const call=async(path:string,method='GET',body?:unknown)=>{const r=await fetch(`${api}/v1/admin/${path}`,{method,headers:{Authorization:`Bearer ${token}`,...(body===undefined?{}:{'Content-Type':'application/json'})},body:body===undefined?undefined:JSON.stringify(body)});const d=await r.json();if(!r.ok)throw Error(d.skipped?.length?`${d.error}: ${d.skipped.join(', ')}. Resolve conflicts and retry.`:(d.error||'Request failed'));return d};
  const refresh=async()=>{const [t,r]=await Promise.all([call('rota-templates'),call('rota-recurrences')]);setTemplates(t.templates);setRecurrences(r.recurrences)};
  useEffect(()=>{void refresh().catch(e=>setMessage(e.message))},[api,token]);
  const execute=async(fn:()=>Promise<void>)=>{setBusy(true);setMessage('');try{await fn();await refresh()}catch(e){setMessage((e as Error).message)}finally{setBusy(false)}};
