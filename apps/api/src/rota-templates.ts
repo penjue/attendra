@@ -68,10 +68,11 @@ export function registerRotaTemplateRoutes(app:FastifyInstance,db:Pick<Pool,'con
   if(!t.rowCount)return reply.code(409).send({ok:false,error:'APPROVED_TEMPLATE_REQUIRED'});
   const base=t.rows[0].anchor_start_date;
   const next=await db.query(`select ($1::date + case when $2='WEEKLY' then interval '7 days' else interval '1 month' end)::date as next`,[base,t.rows[0].period_type]);
-  const nextDate=next.rows[0].next.toISOString().slice(0,10);
+  const nextDate=String(next.rows[0].next).slice(0,10);
   if(p.data.endMode==='ON_DATE'&&p.data.endDate!<nextDate)return reply.code(400).send({ok:false,error:'END_DATE_BEFORE_FIRST_REPEAT'});
   const r=await db.query(`insert into rota_recurrences(template_id,cadence,end_mode,end_date,next_period_start,created_by)
-  values($1,$2,$3,$4,$5,$6) returning id,status`,[id.data,t.rows[0].period_type,p.data.endMode,p.data.endDate??null,nextDate,a.adminId??null]);
+  values($1,$2,$3,$4,$5,$6) on conflict do nothing returning id,status`,[id.data,t.rows[0].period_type,p.data.endMode,p.data.endDate??null,nextDate,a.adminId??null]);
+  if(!r.rowCount)return reply.code(409).send({ok:false,error:'RECURRENCE_ALREADY_ACTIVE'});
   return {ok:true,recurrenceId:r.rows[0].id,status:r.rows[0].status};
  });
  app.get('/v1/admin/rota-recurrences',async(req,reply)=>{
