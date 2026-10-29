@@ -28,6 +28,29 @@ jobs:
       - run: npm install
       - run: npm run typecheck
       - run: npm run build
+      - name: Apply full PostgreSQL schema including recurring rota tables
+        run: npm --workspace @attendra/api run migrate
+        env:
+          DATABASE_URL: postgres://postgres:postgres@localhost:5432/attendra_test
+      - name: Verify recurring rota tables, constraints and provenance
+        run: |
+          node --input-type=module <<'NODE'
+          import pg from 'pg';
+          const db=new pg.Client({connectionString:process.env.DATABASE_URL});
+          await db.connect();
+          try {
+            const required=['rota_templates','rota_template_shifts','rota_recurrences','rota_occurrences'];
+            const r=await db.query("select table_name from information_schema.tables where table_schema='public' and table_name=any($1::text[])",[required]);
+            if(r.rowCount!==required.length)throw new Error('Missing recurring rota tables: '+required.filter(n=>!r.rows.some(x=>x.table_name===n)).join(', '));
+            const col=await db.query("select 1 from information_schema.columns where table_name='shifts' and column_name='rota_occurrence_id'");
+            if(!col.rowCount)throw new Error('Missing shifts.rota_occurrence_id');
+            const idx=await db.query("select 1 from pg_indexes where schemaname='public' and indexname='uq_rota_recurrence_live_template'");
+            if(!idx.rowCount)throw new Error('Missing recurrence duplicate-prevention index');
+            console.log('PostgreSQL recurrence schema checks passed');
+          } finally {await db.end()}
+          NODE
+        env:
+          DATABASE_URL: postgres://postgres:postgres@localhost:5432/attendra_test
       - run: npm test
         env:
           SCHEDULING_TEST_DATABASE_URL: postgres://postgres:postgres@localhost:5432/attendra_test
