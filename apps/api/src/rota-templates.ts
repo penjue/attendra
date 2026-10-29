@@ -47,7 +47,7 @@ export function registerRotaTemplateRoutes(app:FastifyInstance,db:Pick<Pool,'con
  });
  app.get('/v1/admin/rota-templates',async(req,reply)=>{
   const a=requireAdmin(req,reply);if(!a)return;
-  const r=await db.query(`select t.id,t.branch_id as "branchId",t.period_type as "periodType",t.anchor_start_date as "anchorStartDate",t.status,t.approved_version as "approvedVersion",
+  const r=await db.query(`select t.id,t.branch_id as "branchId",t.period_type as "periodType",t.anchor_start_date::text as "anchorStartDate",t.status,t.approved_version as "approvedVersion",
   count(s.id)::int as "shiftCount" from rota_templates t left join rota_template_shifts s on s.template_id=t.id
   where t.company_id=$1 group by t.id order by t.created_at desc limit 100`,[a.companyId]);
   return {ok:true,templates:r.rows};
@@ -68,7 +68,7 @@ export function registerRotaTemplateRoutes(app:FastifyInstance,db:Pick<Pool,'con
   if(!t.rowCount)return reply.code(409).send({ok:false,error:'APPROVED_TEMPLATE_REQUIRED'});
   const base=t.rows[0].anchor_start_date;
   const next=await db.query(`select ($1::date + case when $2='WEEKLY' then interval '7 days' else interval '1 month' end)::date as next`,[base,t.rows[0].period_type]);
-  const nextDate=String(next.rows[0].next).slice(0,10);
+  const nextDate=next.rows[0].next instanceof Date ? next.rows[0].next.toISOString().slice(0,10) : String(next.rows[0].next).slice(0,10);
   if(p.data.endMode==='ON_DATE'&&p.data.endDate!<nextDate)return reply.code(400).send({ok:false,error:'END_DATE_BEFORE_FIRST_REPEAT'});
   const r=await db.query(`insert into rota_recurrences(template_id,cadence,end_mode,end_date,next_period_start,created_by)
   values($1,$2,$3,$4,$5,$6) on conflict do nothing returning id,status`,[id.data,t.rows[0].period_type,p.data.endMode,p.data.endDate??null,nextDate,a.adminId??null]);
