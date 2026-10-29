@@ -1,5 +1,6 @@
 import { registerSchedulingRoutes } from './scheduling.js';
 import { registerRotaTemplateRoutes } from './rota-templates.js';
+import { registerRotaOccurrenceRoutes } from './rota-occurrences.js';
 import { attendancePolicyError } from './attendance-policy.js';
 import Fastify from 'fastify';
 import { registerEmployeeRoutes } from './employee-routes.js';
@@ -15,6 +16,7 @@ const app = Fastify({ logger: true });
 registerEmployeeRoutes(app, db);
 registerSchedulingRoutes(app, db);
 registerRotaTemplateRoutes(app, db);
+registerRotaOccurrenceRoutes(app, db);
 registerEmployeeQrRoutes(app, db);
 
 
