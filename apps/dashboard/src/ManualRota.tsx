@@ -11,7 +11,7 @@ export function ManualRota({api,token,employees,branches}:{api:string;token:stri
  const [dayOffset,setDayOffset]=useState(0),[start,setStart]=useState('07:00'),[end,setEnd]=useState('15:00'),[breakMinutes,setBreakMinutes]=useState(60);
  const [draftShifts,setDraftShifts]=useState<RotaShift[]>([]);
  const [repeat,setRepeat]=useState(false),[endMode,setEndMode]=useState<'UNTIL_STOPPED'|'ON_DATE'>('UNTIL_STOPPED'),[endDate,setEndDate]=useState('');
- const call=async(path:string,method='GET',body?:unknown)=>{const r=await fetch(`${api}/v1/admin/${path}`,{method,headers:{Authorization:`Bearer ${token}`,'Content-Type':'application/json'},body:body===undefined?undefined:JSON.stringify(body)});const d=await r.json();if(!r.ok)throw Error(d.error||'Request failed');return d};
+ const call=async(path:string,method='GET',body?:unknown)=>{const r=await fetch(`${api}/v1/admin/${path}`,{method,headers:{Authorization:`Bearer ${token}`,'Content-Type':'application/json'},body:body===undefined?undefined:JSON.stringify(body)});const d=await r.json();if(!r.ok)throw Error(d.skipped?.length?`${d.error}: ${d.skipped.join(', ')}. Resolve conflicts and retry.`:(d.error||'Request failed'));return d};
  const refresh=async()=>{const [t,r]=await Promise.all([call('rota-templates'),call('rota-recurrences')]);setTemplates(t.templates);setRecurrences(r.recurrences)};
  useEffect(()=>{void refresh().catch(e=>setMessage(e.message))},[api,token]);
  const execute=async(fn:()=>Promise<void>)=>{setBusy(true);setMessage('');try{await fn();await refresh()}catch(e){setMessage((e as Error).message)}finally{setBusy(false)}};
