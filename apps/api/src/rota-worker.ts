@@ -8,6 +8,8 @@ import {db} from './db.js';
 import {signAdminToken} from './admin-auth.js';
 import {registerRotaOccurrenceRoutes} from './rota-occurrences.js';
 
+if(process.env.ATTENDRA_ROTA_WORKER_ENABLED!=='true')throw new Error('Rota worker disabled: set ATTENDRA_ROTA_WORKER_ENABLED=true');
+if(process.env.ATTENDRA_ROTA_WORKER_ENV!=='staging')throw new Error('Rota worker is staging-only until production rollout is approved');
 if(!process.env.ADMIN_TOKEN_SECRET)throw new Error('ADMIN_TOKEN_SECRET is required');
 const app=Fastify({logger:true});
 registerRotaOccurrenceRoutes(app,db);
@@ -16,7 +18,7 @@ try{
  join rota_templates t on t.id=r.template_id
  where r.status='ACTIVE' and t.status='APPROVED'
  and r.next_period_start <= (current_date + interval '7 days')::date
- order by r.next_period_start,r.id limit 100`);
+ order by r.next_period_start,r.id limit 25`);
  let created=0,blocked=0;
  for(const item of due.rows){
   const token=signAdminToken({companyId:item.company_id,email:'rota-worker@internal.attendra',role:'MANAGER',exp:Date.now()+60000});
