@@ -69,6 +69,13 @@ export function registerRotaOccurrenceRoutes(app:FastifyInstance,db:Pick<Pool,'c
     await client.query('ROLLBACK');
     return reply.code(409).send({ok:false,error:'NO_DRAFTS_CREATED',periodStart:x.period_start,skipped});
    }
+   // A partial period needs explicit manager attention. Keep the recurrence
+   // pointing to the same period; the occurrence can be inspected and repaired.
+   if(skipped.length){
+    await client.query('COMMIT');
+    return {ok:true,occurrenceId:occurrence.rows[0].id,periodStart:x.period_start,created,skipped,
+      partial:true,requiresManagerApproval:true,requiresConflictResolution:true};
+   }
    const nextDate=nextRotaPeriod(x.period_start,x.cadence);
    await client.query('update rota_recurrences set next_period_start=$2,updated_at=now() where id=$1',[x.id,nextDate]);
    await client.query('COMMIT');
