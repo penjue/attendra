@@ -11,6 +11,33 @@ export function ManualRota({api,token,employees,branches}:{api:string;token:stri
  const [dayOffset,setDayOffset]=useState(0),[start,setStart]=useState('07:00'),[end,setEnd]=useState('15:00'),[breakMinutes,setBreakMinutes]=useState(60);
  const [draftShifts,setDraftShifts]=useState<RotaShift[]>([]),[editingIndex,setEditingIndex]=useState<number|null>(null),[zoom,setZoom]=useState(90);
  const [endMode,setEndMode]=useState<'UNTIL_STOPPED'|'ON_DATE'>('UNTIL_STOPPED'),[endDate,setEndDate]=useState('');
+ const [restoreNotice,setRestoreNotice]=useState(false);
+ const [recoveryReady,setRecoveryReady]=useState(false);
+ const storageKey='attendra:rota:unsaved:v1';
+ useEffect(()=>{
+  try {
+   const raw=sessionStorage.getItem(storageKey);
+   if(raw){
+    const d=JSON.parse(raw);
+    if(d.api===api&&Array.isArray(d.shifts)&&d.shifts.length){
+     setPeriod(d.period==='MONTHLY'?'MONTHLY':'WEEKLY');
+     setBranch(d.branch||'');setAnchor(d.anchor||'');
+     setDraftShifts(d.shifts.filter((x:RotaShift)=>x&&typeof x.employeeId==='string'&&Number.isInteger(x.dayOffset)));
+     setEndMode(d.endMode==='ON_DATE'?'ON_DATE':'UNTIL_STOPPED');setEndDate(d.endDate||'');
+     setRestoreNotice(true);
+    }
+   }
+  }catch{}
+  setRecoveryReady(true);
+ },[api]);
+ useEffect(()=>{
+  if(!recoveryReady)return;
+  try {
+   if(draftShifts.length)sessionStorage.setItem(storageKey,JSON.stringify({api,period,branch,anchor,shifts:draftShifts,endMode,endDate}));
+   else sessionStorage.removeItem(storageKey);
+  }catch{}
+ },[recoveryReady,api,period,branch,anchor,draftShifts,endMode,endDate]);
+ const discardUnsaved=()=>{setDraftShifts([]);setEditingIndex(null);setRestoreNotice(false);try{sessionStorage.removeItem(storageKey)}catch{}setMessage('Unfinished rota discarded.')};
  const call=async(path:string,method='GET',body?:unknown)=>{const r=await fetch(`${api}/v1/admin/${path}`,{method,headers:{Authorization:`Bearer ${token}`,'Content-Type':'application/json'},body:body===undefined?undefined:JSON.stringify(body)});const d=await r.json();if(!r.ok)throw Error(d.skipped?.length?`${d.error}: ${d.skipped.join(', ')}. Resolve conflicts and retry.`:(d.error||'Request failed'));return d};
  const refresh=async()=>{const [t,r]=await Promise.all([call('rota-templates'),call('rota-recurrences')]);setTemplates(t.templates);setRecurrences(r.recurrences)};
  useEffect(()=>{void refresh().catch(e=>setMessage(e.message))},[api,token]);
@@ -39,6 +66,8 @@ export function ManualRota({api,token,employees,branches}:{api:string;token:stri
  const setStatus=(id:string,status:'ACTIVE'|'PAUSED'|'STOPPED')=>void execute(async()=>{await call(`rota-recurrences/${id}/status`,'POST',{status});setMessage('Recurrence updated.')});
  const generate=(id:string)=>void execute(async()=>{const r=await call(`rota-recurrences/${id}/generate-next`,'POST');setMessage(`${r.created} draft shifts created. ${r.skipped?.length||0} exceptions. Review them in the weekly calendar and use Publish selected drafts when ready.`)});
  return <section className="panel"><div style={{display:'flex',justifyContent:'space-between',alignItems:'center',gap:8,flexWrap:'wrap'}}><h2>Create Weekly / Monthly Rota Pattern</h2><div style={{display:'flex',alignItems:'center',gap:5}}><button type="button" aria-label="Zoom out" disabled={zoom<=70} onClick={()=>setZoom(z=>Math.max(70,z-10))}>−</button><span>{zoom}%</span><button type="button" aria-label="Zoom in" disabled={zoom>=120} onClick={()=>setZoom(z=>Math.min(120,z+10))}>+</button><button type="button" onClick={()=>setZoom(90)}>Reset zoom</button></div></div><div style={{zoom:zoom+'%',fontSize:'0.85rem'}}><p>Build a reusable rota pattern with employee shifts. Approving the pattern does not publish shifts. Generate drafts separately and publish them from the calendar after review.</p>
+ {restoreNotice&&<p role="status">Your unfinished rota was restored from this browser tab.</p>}
+ {draftShifts.length>0&&<p>Unfinished shifts are saved in this browser tab while you work. <button type="button" disabled={busy} onClick={discardUnsaved}>Discard unfinished rota</button></p>}
  <div className="plannerForm">
  <label>Rota type<select value={period} onChange={e=>setPeriod(e.target.value as 'WEEKLY'|'MONTHLY')}><option value="WEEKLY">Weekly</option><option value="MONTHLY">Monthly</option></select></label>
  <label>Branch<select value={branch} onChange={e=>setBranch(e.target.value)}><option value="">Select branch</option>{branches.map(b=><option key={b.id} value={b.id}>{b.name}</option>)}</select></label>
