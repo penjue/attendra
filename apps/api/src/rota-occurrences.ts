@@ -2,6 +2,7 @@ import { z } from 'zod';
 import type { FastifyInstance } from 'fastify';
 import type { Pool } from 'pg';
 import { requireAdmin } from './admin-auth.js';
+import { nextRotaPeriod, rotaShiftDate } from './rota-periods.js';
 
 // Explicit manager-triggered generation. No background jobs and no automatic publication.
 export function registerRotaOccurrenceRoutes(app:FastifyInstance,db:Pick<Pool,'connect'>){
@@ -31,11 +32,8 @@ export function registerRotaOccurrenceRoutes(app:FastifyInstance,db:Pick<Pool,'c
    const skipped:string[]=[];let created=0;
    for(const s of entries.rows){
     // Month end: do not silently shift a 29th/30th/31st into the next month.
-    const bounds=await client.query(`select ($1::date+$2::integer)::date::text as day,
-     (($1::date+$2::integer)::date < (case when $3='WEEKLY' then $1::date+7 else ($1::date+interval '1 month')::date end)) as within_period`,
-     [x.period_start,s.day_offset,x.cadence]);
-    const day=bounds.rows[0].day;
-    if(!bounds.rows[0].within_period || (x.end_mode==='ON_DATE'&&day>x.end_date)){skipped.push('DAY_OUTSIDE_PERIOD:'+s.day_offset);continue}
+    const day=rotaShiftDate(x.period_start,x.cadence,s.day_offset);
+    if(!day || (x.end_mode==='ON_DATE'&&day>x.end_date)){skipped.push('DAY_OUTSIDE_PERIOD:'+s.day_offset);continue}
     const time=await client.query(`select (($1::date+$2::time) at time zone $4) as starts,
      (($1::date+$5::integer+$3::time) at time zone $4) as ends`,
      [day,s.start_time,s.end_time,x.timezone,s.end_day_offset]);
@@ -65,8 +63,8 @@ export function registerRotaOccurrenceRoutes(app:FastifyInstance,db:Pick<Pool,'c
      skipped.push('VALIDATION_FAILED:'+s.day_offset);
     }
    }
-   const next=await client.query(`select (case when $2='WEEKLY' then $1::date+7 else ($1::date+interval '1 month')::date end)::text as next`,[x.period_start,x.cadence]);
-   await client.query('update rota_recurrences set next_period_start=$2,updated_at=now() where id=$1',[x.id,next.rows[0].next]);
+   const nextDate=nextRotaPeriod(x.period_start,x.cadence);
+   await client.query('update rota_recurrences set next_period_start=$2,updated_at=now() where id=$1',[x.id,nextDate]);
    await client.query('COMMIT');
    return {ok:true,occurrenceId:occurrence.rows[0].id,periodStart:x.period_start,created,skipped,requiresManagerApproval:true};
   }catch(e){await client.query('ROLLBACK');req.log.error(e);return reply.code(500).send({ok:false,error:'RECURRENCE_GENERATION_FAILED'})}
