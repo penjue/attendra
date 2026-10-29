@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import Fastify from 'fastify';
 import {createHmac} from 'node:crypto';
-import {registerRotaOccurrenceRoutes} from './dist/rota-occurrences.js';
+
 
 const companyId='11111111-1111-4111-8111-111111111111';
 const recurrenceId='22222222-2222-4222-8222-222222222222';
@@ -11,6 +11,8 @@ const templateId='44444444-4444-4444-8444-444444444444';
 const employeeId='55555555-5555-4555-8555-555555555555';
 const branchId='66666666-6666-4666-8666-666666666666';
 process.env.ADMIN_TOKEN_SECRET='recurrence-integration-test-secret';
+process.env.DATABASE_URL ||= 'postgresql://attendra:attendra@localhost:5432/attendra_test';
+const {registerRotaOccurrenceRoutes}=await import('./dist/rota-occurrences.js');
 function token(){
  const body=Buffer.from(JSON.stringify({companyId,email:'test@example.org',role:'MANAGER',exp:Date.now()+60000})).toString('base64url');
  return body+'.'+createHmac('sha256',process.env.ADMIN_TOKEN_SECRET).update(body).digest('base64url');
