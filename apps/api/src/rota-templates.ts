@@ -7,8 +7,8 @@ const date = z.iso.date();
 const input = z.object({
  branchId:z.uuid(), periodType:z.enum(['WEEKLY','MONTHLY']), anchorStartDate:date,
  shifts:z.array(z.object({employeeId:z.uuid(),dayOffset:z.number().int().min(0).max(30),
- startTime:z.string().regex(/^([01]\\d|2[0-3]):[0-5]$/),
- endTime:z.string().regex(/^([01]\\d|2[0-3]):[0-5]$/),
+ startTime:z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/),
+ endTime:z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/),
  endDayOffset:z.number().int().min(0).max(1).default(0),
  breakMinutes:z.number().int().min(0).max(720).default(0)})).min(1).max(500)
 }).superRefine((p,ctx)=>{
