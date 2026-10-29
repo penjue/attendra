@@ -31,7 +31,7 @@ export function ManualRota({api,token,employees,branches}:{api:string;token:stri
  const approve=(id:string)=>void execute(async()=>{await call(`rota-templates/${id}/approve`,'POST');setMessage('Template approved. Configure repetition if needed.')});
  const startRepeat=(id:string)=>void execute(async()=>{await call(`rota-templates/${id}/recurrence`,'POST',{endMode,...(endMode==='ON_DATE'?{endDate}:{})});setMessage('Repetition configured. Future rotas require draft review.')});
  const setStatus=(id:string,status:'ACTIVE'|'PAUSED'|'STOPPED')=>void execute(async()=>{await call(`rota-recurrences/${id}/status`,'POST',{status});setMessage('Recurrence updated.')});
- const generate=(id:string)=>void execute(async()=>{const r=await call(`rota-recurrences/${id}/generate-next`,'POST');setMessage(`${r.created} draft shifts created. ${r.skipped?.length||0} exceptions. Review before publishing.`)});
+ const generate=(id:string)=>void execute(async()=>{const r=await call(`rota-recurrences/${id}/generate-next`,'POST');setMessage(`${r.created} draft shifts created. ${r.skipped?.length||0} exceptions. Review them in the weekly calendar and use Publish selected drafts when ready.`)});
  return <section className="panel"><h2>Create Weekly / Monthly Rota</h2><p>Manually create and approve a reference rota. Repetition is optional and always creates drafts for review.</p>
  <div className="plannerForm">
  <label>Rota type<select value={period} onChange={e=>setPeriod(e.target.value as 'WEEKLY'|'MONTHLY')}><option value="WEEKLY">Weekly</option><option value="MONTHLY">Monthly</option></select></label>
