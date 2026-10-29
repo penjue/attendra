@@ -30,7 +30,7 @@ test('scheduled worker generates unpublished PostgreSQL drafts exactly once per 
   assert.ok(shifts.rows[0].rota_occurrence_id);
   const occurrence=await pool.query("select period_start::text as day,status from rota_occurrences where recurrence_id=$1",[recurrenceId]);
   assert.equal(occurrence.rowCount,1);
-  assert.equal(occurrence.rows[0].day,'2026-11-09');
+  assert.equal(occurrence.rows[0].day,'2026-11-02');
   const next=await pool.query("select next_period_start::text as day from rota_recurrences where id=$1",[recurrenceId]);
   assert.equal(next.rows[0].day,'2026-11-09');
   const second=run();
