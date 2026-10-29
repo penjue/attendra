@@ -69,12 +69,14 @@ export function registerRotaOccurrenceRoutes(app:FastifyInstance,db:Pick<Pool,'c
     await client.query('ROLLBACK');
     return reply.code(409).send({ok:false,error:'NO_DRAFTS_CREATED',periodStart:x.period_start,skipped});
    }
-   // A partial period needs explicit manager attention. Keep the recurrence
-   // pointing to the same period; the occurrence can be inspected and repaired.
+   // All-or-nothing: never persist an incomplete recurrence period.
+   // Roll back generated shifts and occurrence so the manager can resolve
+   // the conflicts and retry the exact same period without duplicates.
    if(skipped.length){
-    await client.query('COMMIT');
-    return {ok:true,occurrenceId:occurrence.rows[0].id,periodStart:x.period_start,created,skipped,
-      partial:true,requiresManagerApproval:true,requiresConflictResolution:true};
+    await client.query('ROLLBACK');
+    return reply.code(409).send({ok:false,error:'ROTA_PERIOD_INCOMPLETE',
+      periodStart:x.period_start,attempted:entries.rows.length,skipped,
+      requiresConflictResolution:true});
    }
    const nextDate=nextRotaPeriod(x.period_start,x.cadence);
    await client.query('update rota_recurrences set next_period_start=$2,updated_at=now() where id=$1',[x.id,nextDate]);
