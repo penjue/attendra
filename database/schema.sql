@@ -412,3 +412,8 @@ CREATE TABLE IF NOT EXISTS rota_occurrences (
 -- Link generated drafts to their occurrence for auditability and safe future cleanup.
 ALTER TABLE shifts ADD COLUMN IF NOT EXISTS rota_occurrence_id uuid REFERENCES rota_occurrences(id) ON DELETE SET NULL;
 CREATE INDEX IF NOT EXISTS idx_shifts_rota_occurrence ON shifts(rota_occurrence_id) WHERE rota_occurrence_id IS NOT NULL;
+
+-- Only one non-stopped recurrence per template. Prevent duplicate schedules even
+-- when two manager requests arrive simultaneously.
+CREATE UNIQUE INDEX IF NOT EXISTS uq_rota_recurrence_live_template
+ON rota_recurrences(template_id) WHERE status IN ('ACTIVE','PAUSED');
