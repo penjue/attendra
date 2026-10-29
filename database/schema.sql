@@ -351,3 +351,60 @@ $$ LANGUAGE plpgsql;
 DROP TRIGGER IF EXISTS trg_validate_employee_shift_attendance ON attendance_events;
 CREATE TRIGGER trg_validate_employee_shift_attendance BEFORE INSERT ON attendance_events
 FOR EACH ROW EXECUTE FUNCTION validate_employee_shift_attendance();
+
+
+-- Manual rota templates and optional recurrence (metadata only; no background generation yet).
+CREATE TABLE IF NOT EXISTS rota_templates (
+ id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+ company_id uuid NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+ branch_id uuid NOT NULL REFERENCES branches(id) ON DELETE CASCADE,
+ period_type text NOT NULL CHECK (period_type IN ('WEEKLY','MONTHLY')),
+ anchor_start_date date NOT NULL,
+ timezone text NOT NULL,
+ status text NOT NULL DEFAULT 'DRAFT' CHECK (status IN ('DRAFT','APPROVED','ARCHIVED')),
+ approved_version integer NOT NULL DEFAULT 0 CHECK (approved_version >= 0),
+ created_by uuid REFERENCES company_admins(id) ON DELETE SET NULL,
+ created_at timestamptz NOT NULL DEFAULT now(),
+ updated_at timestamptz NOT NULL DEFAULT now(),
+ UNIQUE (id, company_id, branch_id)
+);
+CREATE INDEX IF NOT EXISTS idx_rota_templates_branch ON rota_templates(company_id,branch_id,anchor_start_date);
+
+CREATE TABLE IF NOT EXISTS rota_template_shifts (
+ id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+ template_id uuid NOT NULL REFERENCES rota_templates(id) ON DELETE CASCADE,
+ employee_id uuid NOT NULL REFERENCES employees(id),
+ day_offset integer NOT NULL CHECK (day_offset BETWEEN 0 AND 30),
+ start_local_time time NOT NULL,
+ end_local_time time NOT NULL,
+ end_day_offset integer NOT NULL DEFAULT 0 CHECK (end_day_offset IN (0,1)),
+ break_minutes integer NOT NULL DEFAULT 0 CHECK (break_minutes >= 0),
+ created_at timestamptz NOT NULL DEFAULT now(),
+ CHECK (end_day_offset = 1 OR end_local_time > start_local_time)
+);
+CREATE INDEX IF NOT EXISTS idx_rota_template_shifts_template ON rota_template_shifts(template_id);
+
+CREATE TABLE IF NOT EXISTS rota_recurrences (
+ id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+ template_id uuid NOT NULL REFERENCES rota_templates(id) ON DELETE CASCADE,
+ cadence text NOT NULL CHECK (cadence IN ('WEEKLY','MONTHLY')),
+ end_mode text NOT NULL CHECK (end_mode IN ('UNTIL_STOPPED','ON_DATE')),
+ end_date date,
+ status text NOT NULL DEFAULT 'ACTIVE' CHECK (status IN ('ACTIVE','PAUSED','STOPPED')),
+ next_period_start date NOT NULL,
+ created_by uuid REFERENCES company_admins(id) ON DELETE SET NULL,
+ created_at timestamptz NOT NULL DEFAULT now(),
+ updated_at timestamptz NOT NULL DEFAULT now(),
+ CHECK ((end_mode='ON_DATE' AND end_date IS NOT NULL) OR (end_mode='UNTIL_STOPPED' AND end_date IS NULL))
+);
+CREATE INDEX IF NOT EXISTS idx_rota_recurrences_due ON rota_recurrences(status,next_period_start);
+
+CREATE TABLE IF NOT EXISTS rota_occurrences (
+ id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+ recurrence_id uuid NOT NULL REFERENCES rota_recurrences(id) ON DELETE CASCADE,
+ period_start date NOT NULL,
+ template_version integer NOT NULL CHECK (template_version >= 1),
+ status text NOT NULL DEFAULT 'DRAFT' CHECK (status IN ('DRAFT','PUBLISHED','CANCELLED')),
+ created_at timestamptz NOT NULL DEFAULT now(),
+ UNIQUE(recurrence_id,period_start)
+);
