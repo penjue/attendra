@@ -55,8 +55,8 @@ export function registerRotaOccurrenceRoutes(app:FastifyInstance,db:Pick<Pool,'c
     try{
      // A failed shift validation must not invalidate the entire transaction.
      await client.query('SAVEPOINT shift_attempt');
-     await client.query(`insert into shifts(company_id,branch_id,employee_id,starts_at,ends_at,break_minutes,published)
-      values($1,$2,$3,$4,$5,$6,false)`,[admin.companyId,x.branch_id,s.employee_id,starts,ends,s.break_minutes]);
+     await client.query(`insert into shifts(company_id,branch_id,employee_id,starts_at,ends_at,break_minutes,published,rota_occurrence_id)
+      values($1,$2,$3,$4,$5,$6,false,$7)`,[admin.companyId,x.branch_id,s.employee_id,starts,ends,s.break_minutes,occurrence.rows[0].id]);
      await client.query('RELEASE SAVEPOINT shift_attempt');created++;
     }catch(e:any){
      await client.query('ROLLBACK TO SAVEPOINT shift_attempt');
