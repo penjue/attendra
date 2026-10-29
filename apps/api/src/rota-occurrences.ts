@@ -8,17 +8,19 @@ import { nextRotaPeriod, rotaShiftDate } from './rota-periods.js';
 export function registerRotaOccurrenceRoutes(app:FastifyInstance,db:Pick<Pool,'connect'>){
  app.post('/v1/admin/rota-recurrences/:recurrenceId/generate-next',async(req,reply)=>{
   const admin=requireAdmin(req,reply);if(!admin)return;
+  const originalPeriod=(req.body as {originalPeriod?:boolean}|undefined)?.originalPeriod===true;
   const parsed=z.uuid().safeParse((req.params as {recurrenceId:string}).recurrenceId);
   if(!parsed.success)return reply.code(400).send({ok:false,error:'INVALID_RECURRENCE_ID'});
   const client=await db.connect();
   try{
    await client.query('BEGIN');
    const r=await client.query(`select r.id,r.next_period_start::text as period_start,r.end_mode,r.end_date::text as end_date,
-    r.cadence,r.status,t.id as template_id,t.approved_version,t.branch_id,t.timezone
+    r.cadence,r.status,t.id as template_id,t.approved_version,t.branch_id,t.timezone,t.anchor_start_date::text as anchor_start_date
     from rota_recurrences r join rota_templates t on t.id=r.template_id
     where r.id=$1 and t.company_id=$2 and t.status='APPROVED' for update of r`,[parsed.data,admin.companyId]);
    if(!r.rowCount){await client.query('ROLLBACK');return reply.code(404).send({ok:false,error:'RECURRENCE_NOT_FOUND'})}
    const x=r.rows[0];
+   if(originalPeriod)x.period_start=x.anchor_start_date;
    if(x.status!=='ACTIVE'){await client.query('ROLLBACK');return reply.code(409).send({ok:false,error:'RECURRENCE_NOT_ACTIVE'})}
    if(x.end_mode==='ON_DATE'&&x.period_start>x.end_date){
     await client.query('UPDATE rota_recurrences SET status=\'STOPPED\',updated_at=now() WHERE id=$1',[x.id]);
@@ -78,8 +80,10 @@ export function registerRotaOccurrenceRoutes(app:FastifyInstance,db:Pick<Pool,'c
       periodStart:x.period_start,attempted:entries.rows.length,skipped,
       requiresConflictResolution:true});
    }
-   const nextDate=nextRotaPeriod(x.period_start,x.cadence);
-   await client.query('update rota_recurrences set next_period_start=$2,updated_at=now() where id=$1',[x.id,nextDate]);
+   if(!originalPeriod){
+    const nextDate=nextRotaPeriod(x.period_start,x.cadence);
+    await client.query('update rota_recurrences set next_period_start=$2,updated_at=now() where id=$1',[x.id,nextDate]);
+   }
    await client.query('COMMIT');
    return {ok:true,occurrenceId:occurrence.rows[0].id,periodStart:x.period_start,created,skipped,requiresManagerApproval:true};
   }catch(e){await client.query('ROLLBACK');req.log.error(e);return reply.code(500).send({ok:false,error:'RECURRENCE_GENERATION_FAILED'})}
