@@ -63,6 +63,12 @@ export function registerRotaOccurrenceRoutes(app:FastifyInstance,db:Pick<Pool,'c
      skipped.push('VALIDATION_FAILED:'+s.day_offset);
     }
    }
+   // Do not consume a recurrence period when no draft could be created.
+   // The manager must resolve conflicts or unavailable employees and retry.
+   if(created===0){
+    await client.query('ROLLBACK');
+    return reply.code(409).send({ok:false,error:'NO_DRAFTS_CREATED',periodStart:x.period_start,skipped});
+   }
    const nextDate=nextRotaPeriod(x.period_start,x.cadence);
    await client.query('update rota_recurrences set next_period_start=$2,updated_at=now() where id=$1',[x.id,nextDate]);
    await client.query('COMMIT');
