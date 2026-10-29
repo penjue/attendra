@@ -39,6 +39,7 @@ test('real PostgreSQL recurrence generation commits drafts, rolls back conflicts
   assert.equal(next.rows[0].day,'2099-01-19');
  }finally{
   await app.close();
+  await pool.query('delete from rota_template_shifts where template_id=$1',[templateId]);
   await pool.query('delete from companies where id=$1',[companyId]);
   await pool.end();
  }
