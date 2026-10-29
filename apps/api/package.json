@@ -9,7 +9,8 @@
     "start": "node dist/migrate.js && node dist/index.js",
     "migrate": "node dist/migrate.js",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test": "npm run build && node --test"
+    "test": "npm run build && node --test",
+    "rota:worker": "node dist/rota-worker.js"
   },
   "dependencies": {
     "@fastify/cors": "^10.0.1",
