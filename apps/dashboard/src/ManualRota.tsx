@@ -42,7 +42,7 @@ export function ManualRota({api,token,employees,branches}:{api:string;token:stri
  <label>End time<input type="time" value={end} onChange={e=>setEnd(e.target.value)}/></label>
  <label>Unpaid break (minutes)<input type="number" min="0" max="720" value={breakMinutes} onChange={e=>setBreakMinutes(Number(e.target.value))}/></label>
 
- {<><label>Repeat ends<select value={endMode} onChange={e=>setEndMode(e.target.value as 'UNTIL_STOPPED'|'ON_DATE')}><option value="UNTIL_STOPPED">When manager stops it</option><option value="ON_DATE">On selected date</option></select></label>{endMode==='ON_DATE'&&<label>End date<input type="date" value={endDate} onChange={e=>setEndDate(e.target.value)}/></label>}</>}
+ <label>Repeat ends<select value={endMode} onChange={e=>setEndMode(e.target.value as 'UNTIL_STOPPED'|'ON_DATE')}><option value="UNTIL_STOPPED">When manager stops it</option><option value="ON_DATE">On selected date</option></select></label>{endMode==='ON_DATE'&&<label>End date<input type="date" value={endDate} onChange={e=>setEndDate(e.target.value)}/></label>}
  <button type="button" disabled={busy||!employee} onClick={addShift}>Add shift to rota</button>
  <div><strong>Shifts in this rota: {draftShifts.length}</strong>{draftShifts.map((s,i)=><div className="attendanceRow" key={i}><span>{employees.find(e=>e.id===s.employeeId)?.name||'Employee'} · Day {s.dayOffset+1} · {s.startTime}–{s.endTime} · {s.breakMinutes} min break</span><button type="button" disabled={busy} onClick={()=>setDraftShifts(v=>v.filter((_,j)=>j!==i))}>Remove</button></div>)}</div>
  <button type="button" className="primary" disabled={busy||!draftShifts.length} onClick={create}>Save rota draft</button>
