@@ -10,7 +10,7 @@ export function ManualRota({api,token,employees,branches}:{api:string;token:stri
  const [period,setPeriod]=useState<'WEEKLY'|'MONTHLY'>('WEEKLY'),[branch,setBranch]=useState(''),[anchor,setAnchor]=useState(''),[employee,setEmployee]=useState('');
  const [dayOffset,setDayOffset]=useState(0),[start,setStart]=useState('07:00'),[end,setEnd]=useState('15:00'),[breakMinutes,setBreakMinutes]=useState(60);
  const [draftShifts,setDraftShifts]=useState<RotaShift[]>([]);
- const [repeat,setRepeat]=useState(false),[endMode,setEndMode]=useState<'UNTIL_STOPPED'|'ON_DATE'>('UNTIL_STOPPED'),[endDate,setEndDate]=useState('');
+ const [endMode,setEndMode]=useState<'UNTIL_STOPPED'|'ON_DATE'>('UNTIL_STOPPED'),[endDate,setEndDate]=useState('');
  const call=async(path:string,method='GET',body?:unknown)=>{const r=await fetch(`${api}/v1/admin/${path}`,{method,headers:{Authorization:`Bearer ${token}`,'Content-Type':'application/json'},body:body===undefined?undefined:JSON.stringify(body)});const d=await r.json();if(!r.ok)throw Error(d.skipped?.length?`${d.error}: ${d.skipped.join(', ')}. Resolve conflicts and retry.`:(d.error||'Request failed'));return d};
  const refresh=async()=>{const [t,r]=await Promise.all([call('rota-templates'),call('rota-recurrences')]);setTemplates(t.templates);setRecurrences(r.recurrences)};
  useEffect(()=>{void refresh().catch(e=>setMessage(e.message))},[api,token]);
@@ -28,7 +28,7 @@ export function ManualRota({api,token,employees,branches}:{api:string;token:stri
   setDraftShifts([]);
  });
  const approve=(id:string)=>void execute(async()=>{await call(`rota-templates/${id}/approve`,'POST');setMessage('Rota pattern approved for reuse. No employee shifts have been published. Enable repetition to generate drafts.')});
- const startRepeat=(id:string)=>void execute(async()=>{await call(`rota-templates/${id}/recurrence`,'POST',{endMode,...(endMode==='ON_DATE'?{endDate}:{})});setMessage('Repetition configured. Click Generate next draft, then review and publish shifts in the calendar. This does not automatically publish.')});
+ const startRepeat=(id:string)=>void execute(async()=>{if(endMode==='ON_DATE'&&!endDate)throw Error('Select a repetition end date');await call(`rota-templates/${id}/recurrence`,'POST',{endMode,...(endMode==='ON_DATE'?{endDate}:{})});setMessage('Repetition configured. Click Generate next draft, then review and publish shifts in the calendar. This does not automatically publish.')});
  const setStatus=(id:string,status:'ACTIVE'|'PAUSED'|'STOPPED')=>void execute(async()=>{await call(`rota-recurrences/${id}/status`,'POST',{status});setMessage('Recurrence updated.')});
  const generate=(id:string)=>void execute(async()=>{const r=await call(`rota-recurrences/${id}/generate-next`,'POST');setMessage(`${r.created} draft shifts created. ${r.skipped?.length||0} exceptions. Review them in the weekly calendar and use Publish selected drafts when ready.`)});
  return <section className="panel"><h2>Create Weekly / Monthly Rota Pattern</h2><p>Build a reusable rota pattern with employee shifts. Approving the pattern does not publish shifts. Generate drafts separately and publish them from the calendar after review.</p>
@@ -41,14 +41,14 @@ export function ManualRota({api,token,employees,branches}:{api:string;token:stri
  <label>Start time<input type="time" value={start} onChange={e=>setStart(e.target.value)}/></label>
  <label>End time<input type="time" value={end} onChange={e=>setEnd(e.target.value)}/></label>
  <label>Unpaid break (minutes)<input type="number" min="0" max="720" value={breakMinutes} onChange={e=>setBreakMinutes(Number(e.target.value))}/></label>
- <label className="checkLabel"><input type="checkbox" checked={repeat} onChange={e=>setRepeat(e.target.checked)}/> Show repetition settings (enable after pattern approval)</label>
- {repeat&&<><label>Repeat ends<select value={endMode} onChange={e=>setEndMode(e.target.value as 'UNTIL_STOPPED'|'ON_DATE')}><option value="UNTIL_STOPPED">When manager stops it</option><option value="ON_DATE">On selected date</option></select></label>{endMode==='ON_DATE'&&<label>End date<input type="date" value={endDate} onChange={e=>setEndDate(e.target.value)}/></label>}</>}
+
+ {<><label>Repeat ends<select value={endMode} onChange={e=>setEndMode(e.target.value as 'UNTIL_STOPPED'|'ON_DATE')}><option value="UNTIL_STOPPED">When manager stops it</option><option value="ON_DATE">On selected date</option></select></label>{endMode==='ON_DATE'&&<label>End date<input type="date" value={endDate} onChange={e=>setEndDate(e.target.value)}/></label>}</>}
  <button type="button" disabled={busy||!employee} onClick={addShift}>Add shift to rota</button>
  <div><strong>Shifts in this rota: {draftShifts.length}</strong>{draftShifts.map((s,i)=><div className="attendanceRow" key={i}><span>{employees.find(e=>e.id===s.employeeId)?.name||'Employee'} · Day {s.dayOffset+1} · {s.startTime}–{s.endTime} · {s.breakMinutes} min break</span><button type="button" disabled={busy} onClick={()=>setDraftShifts(v=>v.filter((_,j)=>j!==i))}>Remove</button></div>)}</div>
  <button type="button" className="primary" disabled={busy||!draftShifts.length} onClick={create}>Save rota draft</button>
  </div>
  <p>Build the full weekly or monthly schedule by adding shifts above. Saved patterns cannot yet be edited. Generated shifts must be reviewed and published separately in the existing calendar.</p>
- <h3>Rota templates</h3>{templates.map(t=><div className="attendanceRow" key={t.id}><div><strong>{t.periodType} · {t.anchorStartDate?.slice(0,10)}</strong><p>{t.shiftCount} shift(s) · {t.status}</p></div>{t.status==='DRAFT'?<button disabled={busy} onClick={()=>approve(t.id)}>Approve pattern</button>:repeat&&<button disabled={busy} onClick={()=>startRepeat(t.id)}>Enable draft repetition</button>}</div>)}
+ <h3>Rota templates</h3>{templates.map(t=><div className="attendanceRow" key={t.id}><div><strong>{t.periodType} · {t.anchorStartDate?.slice(0,10)}</strong><p>{t.shiftCount} shift(s) · {t.status}</p></div>{t.status==='DRAFT'?<button disabled={busy} onClick={()=>approve(t.id)}>Approve pattern</button>:t.status==='APPROVED'&&!recurrences.some(r=>r.templateId===t.id&&r.status!=='STOPPED')?<button disabled={busy} onClick={()=>startRepeat(t.id)}>Enable draft repetition</button>:null}</div>)}
  <h3>Recurring schedules</h3>{recurrences.map(r=><div className="attendanceRow" key={r.id}><div><strong>{r.cadence} · {r.status}</strong><p>Next: {r.nextPeriodStart} · {r.occurrenceCount} occurrence(s)</p></div><div>{r.status==='ACTIVE'&&<><button disabled={busy} onClick={()=>generate(r.id)}>Generate next draft</button><button disabled={busy} onClick={()=>setStatus(r.id,'PAUSED')}>Pause</button></>}{r.status==='PAUSED'&&<button disabled={busy} onClick={()=>setStatus(r.id,'ACTIVE')}>Resume</button>}{r.status!=='STOPPED'&&<button disabled={busy} onClick={()=>setStatus(r.id,'STOPPED')}>Stop</button>}</div></div>)}
  {message&&<p role="status">{message}</p>}
  </section>;
