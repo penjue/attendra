@@ -74,6 +74,28 @@ export function registerRotaTemplateRoutes(app:FastifyInstance,db:Pick<Pool,'con
   values($1,$2,$3,$4,$5,$6) returning id,status`,[id.data,t.rows[0].period_type,p.data.endMode,p.data.endDate??null,nextDate,a.adminId??null]);
   return {ok:true,recurrenceId:r.rows[0].id,status:r.rows[0].status};
  });
+ app.get('/v1/admin/rota-recurrences',async(req,reply)=>{
+  const a=requireAdmin(req,reply);if(!a)return;
+  const result=await db.query(`select r.id,r.template_id as "templateId",r.cadence,r.end_mode as "endMode",
+   r.end_date::text as "endDate",r.status,r.next_period_start::text as "nextPeriodStart",
+   t.branch_id as "branchId",t.period_type as "periodType",t.approved_version as "approvedVersion",
+   (select count(*)::int from rota_occurrences o where o.recurrence_id=r.id) as "occurrenceCount"
+   from rota_recurrences r join rota_templates t on t.id=r.template_id
+   where t.company_id=$1 order by r.created_at desc limit 100`,[a.companyId]);
+  return {ok:true,recurrences:result.rows};
+ });
+ app.get('/v1/admin/rota-recurrences/:recurrenceId/occurrences',async(req,reply)=>{
+  const a=requireAdmin(req,reply);if(!a)return;
+  const parsed=z.uuid().safeParse((req.params as {recurrenceId:string}).recurrenceId);
+  if(!parsed.success)return reply.code(400).send({ok:false,error:'INVALID_ID'});
+  const result=await db.query(`select o.id,o.period_start::text as "periodStart",
+   o.template_version as "templateVersion",o.status,o.created_at as "createdAt"
+   from rota_occurrences o join rota_recurrences r on r.id=o.recurrence_id
+   join rota_templates t on t.id=r.template_id
+   where o.recurrence_id=$1 and t.company_id=$2
+   order by o.period_start desc limit 100`,[parsed.data,a.companyId]);
+  return {ok:true,occurrences:result.rows};
+ });
  app.post('/v1/admin/rota-recurrences/:recurrenceId/status',async(req,reply)=>{
   const a=requireAdmin(req,reply);if(!a)return;
   const id=z.uuid().safeParse((req.params as any).recurrenceId),p=z.object({status:z.enum(['ACTIVE','PAUSED','STOPPED'])}).safeParse(req.body);
