@@ -274,7 +274,7 @@ CREATE TABLE IF NOT EXISTS employee_unavailability (
  employee_id uuid NOT NULL REFERENCES employees(id) ON DELETE CASCADE,
  starts_at timestamptz NOT NULL,
  ends_at timestamptz NOT NULL,
- category text NOT NULL CHECK (category IN ('ABSENCE','INJURY','LEAVE','DAY_OFF')),
+ category text NOT NULL CHECK (category IN ('ABSENCE','INJURY','LEAVE','DAY_OFF','SICKNESS')),
  active boolean NOT NULL DEFAULT true,
  created_at timestamptz NOT NULL DEFAULT now(),
  CHECK (ends_at>starts_at)
@@ -368,3 +368,7 @@ CREATE TABLE IF NOT EXISTS employee_day_off_rules (
  CHECK ((frequency='WEEKLY' AND cardinality(weekdays)>0 AND cardinality(month_days)=0) OR (frequency='MONTHLY' AND cardinality(month_days)>0 AND cardinality(weekdays)=0))
 );
 CREATE INDEX IF NOT EXISTS idx_day_off_rules_active ON employee_day_off_rules(company_id,employee_id,starts_on) WHERE active=true;
+
+-- Existing installations require the absence category constraint to be refreshed.
+ALTER TABLE employee_unavailability DROP CONSTRAINT IF EXISTS employee_unavailability_category_check;
+ALTER TABLE employee_unavailability ADD CONSTRAINT employee_unavailability_category_check CHECK (category IN ('ABSENCE','INJURY','LEAVE','DAY_OFF','SICKNESS'));
