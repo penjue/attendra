@@ -60,7 +60,7 @@ test('PostgreSQL scheduling: migrations, isolation, drafts, exceptions, cover an
    assert.equal((await success('POST','generate',{from:day,to:day,patternIds:[patternId]})).existing,1);
   });
   await t.test('unavailable pattern dates produce cover drafts and cannot publish until resolved',async()=>{
-   const next='2099-06-02';await success('POST','unavailability',{employeeId:employee,fromDate:next,toDate:next,category:'DAY_OFF'});
+   const next='2099-06-02';const weekday=((new Date(`${next}T12:00:00Z`).getUTCDay()+6)%7)+1;await success('POST','day-off-rules',{employeeId:employee,frequency:'WEEKLY',weekdays:[weekday],monthDays:[],startsOn:next,endsOn:next});
    const gen=await success('POST','generate',{from:next,to:next,patternIds:[patternId]});assert.equal(gen.created,1);assert.equal(gen.needsCover.length,1);
    const calendar=await success('GET',`calendar?from=${next}&to=${next}`);const draft=calendar.shifts[0];assert.equal(draft.needsCover,true);
    const r=await request('POST','publish',{shiftIds:[draft.id]});assert.equal(r.statusCode,409);assert.equal(r.json().error,'EMPLOYEE_UNAVAILABLE');assert.equal((await pool.query('select published from shifts where id=$1',[draft.id])).rows[0].published,false);
