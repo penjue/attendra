@@ -2,10 +2,11 @@ import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import {eligibleCover,netShiftHours,validDateRange} from '../dist/scheduling-rules.js';
 const candidate={employeeId:'worker',jobRole:'Barista',maxWeeklyHours:40,scheduledHours:32,unavailable:false,overlap:false,allowedBranches:['branch']};
-test('cover eligibility rejects absence, overlap, wrong role, wrong branch and excessive hours',()=>{
+test('cover eligibility rejects absence, overlap, wrong role, wrong branch but permits weekly hour warnings',()=>{
  assert.equal(eligibleCover(candidate,'branch','barista',8),true);
- for(const change of [{unavailable:true},{overlap:true},{jobRole:'Cashier'},{allowedBranches:['other']},{scheduledHours:33}])assert.equal(eligibleCover({...candidate,...change},'branch','Barista',8),false);
+ for(const change of [{unavailable:true},{overlap:true},{jobRole:'Cashier'},{allowedBranches:['other']}])assert.equal(eligibleCover({...candidate,...change},'branch','Barista',8),false);
  assert.equal(eligibleCover({...candidate,allowedBranches:[]},'other','',8),true);
+ assert.equal(eligibleCover({...candidate,scheduledHours:40},'branch','Barista',8),true,'Manager may assign cover above the weekly limit');
 });
 test('net hours account for overnight shifts, DST and breaks',()=>{
  assert.equal(netShiftHours('2026-10-24T21:00:00Z','2026-10-25T06:00:00Z',60),8);
