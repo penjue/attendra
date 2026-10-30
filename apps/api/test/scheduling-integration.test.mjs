@@ -48,6 +48,18 @@ test('PostgreSQL scheduling: migrations, isolation, drafts, exceptions, cover an
    await assert.rejects(pool.query("insert into attendance_events(company_id,branch_id,employee_id,shift_id,action,status,occurred_at,source) values($1,$2,$3,$4,'CHECK_IN','ON_TIME',$5,'EMPLOYEE_QR')",[company,branch,employee,shiftId,day+'T07:00:00Z']),e=>e.message==='EMPLOYEE_UNAVAILABLE');
    assert.equal((await success('GET','patterns')).patterns.length,1);
   });
+  await t.test('injury extensions update absence dates and reject invalid or unrelated changes',async()=>{
+   const extended=await success('PUT',`unavailability/${absenceId}/extend`,{toDate:'2099-06-04'});
+   assert.equal(extended.toDate,'2099-06-04');
+   const stored=await pool.query('select ends_at from employee_unavailability where id=$1',[absenceId]);
+   assert.equal(new Date(stored.rows[0].ends_at).toISOString(),'2099-06-04T23:00:00.000Z');
+   const invalid=await request('PUT',`unavailability/${absenceId}/extend`,{toDate:day});
+   assert.equal(invalid.statusCode,400);
+   const leave=(await success('POST','unavailability',{employeeId:wrongRole,fromDate:day,toDate:day,category:'LEAVE'})).id;
+   const rejected=await request('PUT',`unavailability/${leave}/extend`,{toDate:'2099-06-05'});
+   assert.equal(rejected.statusCode,409);
+   await success('DELETE',`unavailability/${leave}`);
+  });
   await t.test('cover excludes overlapping shifts and mismatched roles and is revalidated at assignment',async()=>{
    for(const id of [cover,overlap])await success('PUT',`profiles/${id}`,{jobRole:'Barista',maxWeeklyHours:40,allowedBranchIds:[branch]});
    await success('PUT',`profiles/${wrongRole}`,{jobRole:'Cashier',maxWeeklyHours:40,allowedBranchIds:[branch]});
