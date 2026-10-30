@@ -308,10 +308,10 @@ BEGIN
   RAISE EXCEPTION 'SHIFT_HAS_ATTENDANCE' USING ERRCODE='P0001';
  END IF;
  IF NEW.break_minutes>=extract(epoch FROM(NEW.ends_at-NEW.starts_at))/60 THEN RAISE EXCEPTION 'BREAK_EXCEEDS_SHIFT' USING ERRCODE='P0001'; END IF;
- IF EXISTS(SELECT 1 FROM shifts WHERE company_id=NEW.company_id AND employee_id=NEW.employee_id AND id<>NEW.id AND starts_at<NEW.ends_at AND ends_at>NEW.starts_at) THEN
+ IF EXISTS(SELECT 1 FROM shifts WHERE company_id=NEW.company_id AND employee_id=NEW.employee_id AND id<>NEW.id AND starts_at<NEW.ends_at AND (ends_at IS NULL OR ends_at>NEW.starts_at)) THEN
   RAISE EXCEPTION 'SHIFT_OVERLAP' USING ERRCODE='P0001';
  END IF;
- IF NEW.published AND EXISTS(SELECT 1 FROM employee_unavailability WHERE company_id=NEW.company_id AND employee_id=NEW.employee_id AND active=true AND starts_at<NEW.ends_at AND ends_at>NEW.starts_at) THEN
+ IF NEW.published AND EXISTS(SELECT 1 FROM employee_unavailability WHERE company_id=NEW.company_id AND employee_id=NEW.employee_id AND active=true AND starts_at<NEW.ends_at AND (ends_at IS NULL OR ends_at>NEW.starts_at)) THEN
   RAISE EXCEPTION 'EMPLOYEE_UNAVAILABLE' USING ERRCODE='P0001';
  END IF;
  SELECT * INTO profile FROM employee_schedule_profiles WHERE employee_id=NEW.employee_id AND company_id=NEW.company_id;
@@ -341,7 +341,7 @@ BEGIN
  IF NEW.source IN ('TABLET','EMPLOYEE_QR') AND NEW.shift_id IS NOT NULL AND NEW.action='CHECK_IN' THEN
   IF NOT EXISTS(SELECT 1 FROM shifts WHERE id=NEW.shift_id AND published=true) THEN RAISE EXCEPTION 'SHIFT_NOT_PUBLISHED' USING ERRCODE='P0001'; END IF;
   IF EXISTS(SELECT 1 FROM employee_unavailability u JOIN shifts s ON s.id=NEW.shift_id
-   WHERE u.employee_id=NEW.employee_id AND u.company_id=NEW.company_id AND u.active=true AND u.starts_at<s.ends_at AND u.ends_at>s.starts_at) THEN
+   WHERE u.employee_id=NEW.employee_id AND u.company_id=NEW.company_id AND u.active=true AND u.starts_at<s.ends_at AND (u.ends_at IS NULL OR u.ends_at>s.starts_at)) THEN
    RAISE EXCEPTION 'EMPLOYEE_UNAVAILABLE' USING ERRCODE='P0001';
   END IF;
  END IF;
