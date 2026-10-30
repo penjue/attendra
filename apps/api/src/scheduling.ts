@@ -71,6 +71,22 @@ export function registerSchedulingRoutes(app:FastifyInstance,db:Pick<Pool,'query
   const p=z.object({employeeId:z.uuid(),fromDate:z.iso.date(),toDate:z.iso.date(),category:z.enum(['ABSENCE','INJURY','LEAVE','DAY_OFF','SICKNESS'])}).refine(v=>validDateRange(v.fromDate,v.toDate,367)).refine(v=>v.category!=='DAY_OFF','Use recurring regular days off for the DAY_OFF category').parse(req.body);
   return tx(async c=>{await lockEmployees(c,a.companyId,[p.employeeId]);const employee=await c.query('select 1 from employees where id=$1 and company_id=$2 and active=true',[p.employeeId,a.companyId]);if(!employee.rowCount)throw new ScheduleError('EMPLOYEE_NOT_FOUND',404);const r=await c.query('insert into employee_unavailability(company_id,employee_id,starts_at,ends_at,category) select $1,$2,$3::date::timestamp at time zone timezone,($4::date+1)::timestamp at time zone timezone,$5 from companies where id=$1 returning id',[a.companyId,p.employeeId,p.fromDate,p.toDate,p.category]);await notice(c,a.companyId,p.employeeId,'Your manager updated your availability. Check your schedule.');await audit(c,a,'RECORD_UNAVAILABILITY','EMPLOYEE',p.employeeId);return{ok:true,id:r.rows[0].id}});
  });
+ route('PUT','/v1/admin/scheduling/unavailability/:absenceId/extend',async(req,a)=>{
+  const absence=id(req,'absenceId'),p=z.object({toDate:z.iso.date()}).parse(req.body);
+  return tx(async c=>{
+   const current=await c.query('select employee_id,starts_at,ends_at,category,active from employee_unavailability where id=$1 and company_id=$2 for update',[absence,a.companyId]);
+   if(!current.rowCount||!current.rows[0].active)throw new ScheduleError('UNAVAILABILITY_NOT_FOUND',404);
+   const row=current.rows[0];if(!['INJURY','SICKNESS'].includes(row.category))throw new ScheduleError('EXTENSION_NOT_ALLOWED',409);
+   await lockEmployees(c,a.companyId,[row.employee_id]);
+   const dates=await c.query('select ($1::timestamptz at time zone timezone)::date::text as start,($2::timestamptz at time zone timezone)::date::text as finish from companies where id=$3',[row.starts_at,row.ends_at,a.companyId]);
+   const fromDate=dates.rows[0].start,previousEnd=dates.rows[0].finish;
+   const endDate=await c.query('select ($1::date+1)::timestamp at time zone timezone as finish from companies where id=$2',[p.toDate,a.companyId]);
+   if(!validDateRange(fromDate,p.toDate,367)||new Date(endDate.rows[0].finish).getTime()<=new Date(row.ends_at).getTime())throw new ScheduleError('INVALID_EXTENSION',400);
+   await c.query('update employee_unavailability set ends_at=$1 where id=$2 and company_id=$3',[endDate.rows[0].finish,absence,a.companyId]);
+   await notice(c,a.companyId,row.employee_id,'Your manager extended your recorded absence. Check your schedule.');
+   await audit(c,a,'EXTEND_UNAVAILABILITY','EMPLOYEE',row.employee_id);return{ok:true,id:absence,toDate:p.toDate};
+  });
+ });
  route('DELETE','/v1/admin/scheduling/unavailability/:absenceId',async(req,a)=>tx(async c=>{const absence=id(req,'absenceId');const current=await c.query('select employee_id from employee_unavailability where id=$1 and company_id=$2',[absence,a.companyId]);if(!current.rowCount)throw new ScheduleError('UNAVAILABILITY_NOT_FOUND',404);await lockEmployees(c,a.companyId,[current.rows[0].employee_id]);await c.query('update employee_unavailability set active=false where id=$1 and company_id=$2',[absence,a.companyId]);await notice(c,a.companyId,current.rows[0].employee_id,'Your manager removed an availability exception. Check your schedule.');await audit(c,a,'REMOVE_UNAVAILABILITY','EMPLOYEE',current.rows[0].employee_id);return{ok:true}}));
  const coverOptions=async(c:Pick<Pool,'query'>,company:string,shift:any)=>{
   const r=await c.query(`select e.id as "employeeId",concat(e.first_name,' ',e.last_name) as name,coalesce(p.job_role,'') as "jobRole",coalesce(p.max_weekly_hours,40)::float as "maxWeeklyHours",coalesce(p.allowed_branch_ids,'{}'::uuid[]) as "allowedBranches",
