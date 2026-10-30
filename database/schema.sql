@@ -351,3 +351,19 @@ $$ LANGUAGE plpgsql;
 DROP TRIGGER IF EXISTS trg_validate_employee_shift_attendance ON attendance_events;
 CREATE TRIGGER trg_validate_employee_shift_attendance BEFORE INSERT ON attendance_events
 FOR EACH ROW EXECUTE FUNCTION validate_employee_shift_attendance();
+
+-- Manager-controlled recurring regular days off.
+CREATE TABLE IF NOT EXISTS employee_day_off_rules (
+ id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+ company_id uuid NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+ employee_id uuid NOT NULL REFERENCES employees(id) ON DELETE CASCADE,
+ frequency text NOT NULL CHECK (frequency IN ('WEEKLY','MONTHLY')),
+ weekdays integer[] NOT NULL DEFAULT '{}',
+ month_days integer[] NOT NULL DEFAULT '{}',
+ starts_on date NOT NULL,
+ ends_on date,
+ active boolean NOT NULL DEFAULT true,
+ created_at timestamptz NOT NULL DEFAULT now(),
+ CHECK (ends_on IS NULL OR ends_on >= starts_on)
+);
+CREATE INDEX IF NOT EXISTS idx_day_off_rules_active ON employee_day_off_rules(company_id,employee_id,starts_on) WHERE active=true;
