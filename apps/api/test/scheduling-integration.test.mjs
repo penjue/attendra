@@ -79,6 +79,15 @@ test('PostgreSQL scheduling: migrations, isolation, drafts, exceptions, cover an
    const next='2099-06-02';const weekday=((new Date(`${next}T12:00:00Z`).getUTCDay()+6)%7)+1;await success('POST','day-off-rules',{employeeId:employee,frequency:'WEEKLY',weekdays:[weekday],monthDays:[],startsOn:next,endsOn:next});
    const gen=await success('POST','generate',{from:next,to:next,patternIds:[patternId]});assert.equal(gen.created,1);assert.equal(gen.needsCover.length,1);
    const calendar=await success('GET',`calendar?from=${next}&to=${next}`);const draft=calendar.shifts[0];assert.equal(draft.needsCover,true);
+   const initialCover=await success('GET',`shifts/${draft.id}/cover`);
+   assert.ok(initialCover.candidates.some(c=>c.employeeId===cover),'Available employee should be suggested');
+   const coverDayOff=(await success('POST','day-off-rules',{employeeId:cover,frequency:'WEEKLY',weekdays:[weekday],monthDays:[],startsOn:next,endsOn:next})).id;
+   const excluded=await success('GET',`shifts/${draft.id}/cover`);
+   assert.ok(!excluded.candidates.some(c=>c.employeeId===cover),'Recurring day off must exclude cover candidate');
+   assert.ok(excluded.candidates.some(c=>c.employeeId===overlap),'Other available cover must remain eligible');
+   const refused=await request('POST',`shifts/${draft.id}/cover`,{employeeId:cover});
+   assert.equal(refused.statusCode,409,'Cover assignment must revalidate recurring day off');
+   await success('DELETE',`day-off-rules/${coverDayOff}`);
    const r=await request('POST','publish',{shiftIds:[draft.id]});assert.equal(r.statusCode,409);assert.equal(r.json().error,'EMPLOYEE_UNAVAILABLE');assert.equal((await pool.query('select published from shifts where id=$1',[draft.id])).rows[0].published,false);
   });
   await t.test('weekly hours, overlap, malformed times and concurrent drafts are guarded',async()=>{
