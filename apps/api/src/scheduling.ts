@@ -79,7 +79,7 @@ export function registerSchedulingRoutes(app:FastifyInstance,db:Pick<Pool,'query
    const row=current.rows[0];if(!['INJURY','SICKNESS'].includes(row.category))throw new ScheduleError('EXTENSION_NOT_ALLOWED',409);
    await lockEmployees(c,a.companyId,[row.employee_id]);
    const dates=await c.query('select ($1::timestamptz at time zone timezone)::date::text as start,($2::timestamptz at time zone timezone)::date::text as finish from companies where id=$3',[row.starts_at,row.ends_at,a.companyId]);
-   const fromDate=dates.rows[0].start,previousEnd=dates.rows[0].finish;
+   const fromDate=dates.rows[0].start;
    const endDate=await c.query('select ($1::date+1)::timestamp at time zone timezone as finish from companies where id=$2',[p.toDate,a.companyId]);
    if(!validDateRange(fromDate,p.toDate,367)||new Date(endDate.rows[0].finish).getTime()<=new Date(row.ends_at).getTime())throw new ScheduleError('INVALID_EXTENSION',400);
    await c.query('update employee_unavailability set ends_at=$1 where id=$2 and company_id=$3',[endDate.rows[0].finish,absence,a.companyId]);
