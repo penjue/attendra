@@ -279,6 +279,8 @@ CREATE TABLE IF NOT EXISTS employee_unavailability (
  created_at timestamptz NOT NULL DEFAULT now(),
  CHECK (ends_at>starts_at)
 );
+-- Open-ended sickness and injury records may omit ends_at; existing finite records are unchanged.
+ALTER TABLE employee_unavailability ALTER COLUMN ends_at DROP NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_unavailability_employee_time ON employee_unavailability(company_id,employee_id,starts_at,ends_at) WHERE active=true;
 ALTER TABLE shifts ADD COLUMN IF NOT EXISTS published boolean NOT NULL DEFAULT true;
 ALTER TABLE shifts ADD COLUMN IF NOT EXISTS pattern_id uuid REFERENCES shift_patterns(id) ON DELETE SET NULL;
