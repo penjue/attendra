@@ -322,9 +322,7 @@ BEGIN
  hours_limit:=coalesce(profile.max_weekly_hours,40);
  SELECT coalesce(sum(extract(epoch FROM(ends_at-starts_at))/3600-break_minutes/60.0),0) INTO scheduled_hours
  FROM shifts WHERE company_id=NEW.company_id AND employee_id=NEW.employee_id AND id<>NEW.id AND starts_at>=week_start AND starts_at<week_end;
- IF scheduled_hours+extract(epoch FROM(NEW.ends_at-NEW.starts_at))/3600-NEW.break_minutes/60.0>hours_limit THEN
-  RAISE EXCEPTION 'WEEKLY_HOURS_EXCEEDED' USING ERRCODE='P0001';
- END IF;
+ -- Weekly hours are advisory: managers may assign additional hours, with dashboard warnings.
  RETURN NEW;
 END;
 $$ LANGUAGE plpgsql;
