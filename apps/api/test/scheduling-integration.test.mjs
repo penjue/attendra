@@ -65,11 +65,11 @@ test('PostgreSQL scheduling: migrations, isolation, drafts, exceptions, cover an
    await success('DELETE',`unavailability/${sickness}`);
   });
   await t.test('manager ends an open-ended sickness absence',async()=>{
-   const sickness=(await success('POST','unavailability',{employeeId:cover,fromDate:day,toDate:null,category:'SICKNESS'})).id;
+   const sickness=(await success('POST','unavailability',{employeeId:cover,fromDate:'2099-06-20',toDate:null,category:'SICKNESS'})).id;
    const before=await pool.query('select ends_at from employee_unavailability where id=$1',[sickness]);
    assert.equal(before.rows[0].ends_at,null);
-   const ended=await success('PUT',`unavailability/${sickness}/end`,{lastAbsentDate:day});
-   assert.equal(ended.lastAbsentDate,day);
+   const ended=await success('PUT',`unavailability/${sickness}/end`,{lastAbsentDate:'2099-06-20'});
+   assert.equal(ended.lastAbsentDate,'2099-06-20');
    const after=await pool.query('select ends_at from employee_unavailability where id=$1',[sickness]);
    assert.ok(after.rows[0].ends_at);
   });
