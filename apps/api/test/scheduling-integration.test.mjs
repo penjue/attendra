@@ -59,6 +59,10 @@ test('PostgreSQL scheduling: migrations, isolation, drafts, exceptions, cover an
    const rejected=await request('PUT',`unavailability/${leave}/extend`,{toDate:'2099-06-05'});
    assert.equal(rejected.statusCode,409);
    await success('DELETE',`unavailability/${leave}`);
+   const sickness=(await success('POST','unavailability',{employeeId:wrongRole,fromDate:day,toDate:day,category:'SICKNESS'})).id;
+   const extendedSickness=await success('PUT',`unavailability/${sickness}/extend`,{toDate:'2099-06-03'});
+   assert.equal(extendedSickness.toDate,'2099-06-03');
+   await success('DELETE',`unavailability/${sickness}`);
   });
   await t.test('cover excludes overlapping shifts and mismatched roles and is revalidated at assignment',async()=>{
    for(const id of [cover,overlap])await success('PUT',`profiles/${id}`,{jobRole:'Barista',maxWeeklyHours:40,allowedBranchIds:[branch]});
