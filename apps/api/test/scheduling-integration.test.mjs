@@ -69,7 +69,7 @@ test('PostgreSQL scheduling: migrations, isolation, drafts, exceptions, cover an
    await success('PUT',`profiles/${wrongRole}`,{jobRole:'Cashier',maxWeeklyHours:8,allowedBranchIds:[branch]});
    const data={employeeIds:[wrongRole],branchId:branch,date:day,startTime:'08:00',endTime:'17:00',breakMinutes:60};
    const both=await Promise.all([request('POST','drafts',data),request('POST','drafts',data)]);assert.deepEqual(both.map(r=>r.statusCode).sort(),[200,409]);
-   const r=await request('POST','drafts',{...data,date:'2099-06-02'});assert.equal(r.statusCode,200,'Weekly hour limits must warn rather than block manager-created shifts');
+   const r=await request('POST','drafts',{...data,date:'2099-06-03'});assert.equal(r.statusCode,200,'Weekly hour limits must warn rather than block manager-created shifts');
    assert.equal((await request('POST','drafts',{...data,startTime:'08:00',endTime:'08:00'})).statusCode,400);
    await assert.rejects(pool.query("insert into shifts(company_id,employee_id,branch_id,starts_at,ends_at) values($1,$2,$3,'2099-06-01T08:00Z','2099-06-01T09:00Z')",[company,wrongRole,branch]),e=>e.message==='SHIFT_OVERLAP');
   });
