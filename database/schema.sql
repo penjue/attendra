@@ -364,6 +364,7 @@ CREATE TABLE IF NOT EXISTS employee_day_off_rules (
  ends_on date,
  active boolean NOT NULL DEFAULT true,
  created_at timestamptz NOT NULL DEFAULT now(),
- CHECK (ends_on IS NULL OR ends_on >= starts_on)
+ CHECK (ends_on IS NULL OR ends_on >= starts_on),
+ CHECK ((frequency='WEEKLY' AND cardinality(weekdays)>0 AND cardinality(month_days)=0) OR (frequency='MONTHLY' AND cardinality(month_days)>0 AND cardinality(weekdays)=0))
 );
 CREATE INDEX IF NOT EXISTS idx_day_off_rules_active ON employee_day_off_rules(company_id,employee_id,starts_on) WHERE active=true;
