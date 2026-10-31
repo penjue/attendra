@@ -48,6 +48,19 @@ test('PostgreSQL scheduling: migrations, isolation, drafts, exceptions, cover an
    await assert.rejects(pool.query("insert into attendance_events(company_id,branch_id,employee_id,shift_id,action,status,occurred_at,source) values($1,$2,$3,$4,'CHECK_IN','ON_TIME',$5,'EMPLOYEE_QR')",[company,branch,employee,shiftId,day+'T07:00:00Z']),e=>e.message==='EMPLOYEE_UNAVAILABLE');
    assert.equal((await success('GET','patterns')).patterns.length,1);
   });
+  await t.test('hourly absence preserves precise company-local interval and rejects invalid windows',async()=>{
+   const date='2099-07-10';
+   const recorded=await success('POST','unavailability',{employeeId:wrongRole,fromDate:date,toDate:date,category:'ABSENCE',startTime:'10:00',endTime:'14:00'});
+   const row=(await pool.query('select starts_at,ends_at from employee_unavailability where id=$1',[recorded.id])).rows[0];
+   assert.equal(row.starts_at.toISOString(),'2099-07-10T09:00:00.000Z');
+   assert.equal(row.ends_at.toISOString(),'2099-07-10T13:00:00.000Z');
+   assert.equal((row.ends_at-row.starts_at)/3600000,4);
+   const invalid=await request('POST','unavailability',{employeeId:wrongRole,fromDate:date,toDate:date,category:'ABSENCE',startTime:'14:00',endTime:'10:00'});
+   assert.equal(invalid.statusCode,400);
+   const missingEnd=await request('POST','unavailability',{employeeId:wrongRole,fromDate:date,toDate:date,category:'ABSENCE',startTime:'10:00'});
+   assert.equal(missingEnd.statusCode,400);
+   await success('DELETE',`unavailability/${recorded.id}`);
+  });
   await t.test('injury extensions update absence dates and reject invalid or unrelated changes',async()=>{
    const extended=await success('PUT',`unavailability/${absenceId}/extend`,{toDate:'2099-06-04'});
    assert.equal(extended.toDate,'2099-06-04');
