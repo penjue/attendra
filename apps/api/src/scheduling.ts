@@ -130,6 +130,26 @@ export function registerSchedulingRoutes(app:FastifyInstance,db:Pick<Pool,'query
   }
   return{ok:true,shiftId,employeeId:shift.employee_id,intervals:merged,uncoveredHours,suggestions,requiresManagerApproval:true,originalShiftUnchanged:true};
  });
+ // Manager-selected partial cover creates a draft only; publishing remains a separate approval action.
+ route('POST','/v1/admin/scheduling/shifts/:shiftId/partial-cover',async(req,a)=>{
+  const shiftId=id(req,'shiftId'),p=z.object({employeeId:z.uuid(),startsAt:z.iso.datetime({offset:true}),endsAt:z.iso.datetime({offset:true})}).parse(req.body);
+  return tx(async c=>{
+   const source=await c.query('select * from shifts where id=$1 and company_id=$2 for update',[shiftId,a.companyId]);
+   if(!source.rowCount)throw new ScheduleError('SHIFT_NOT_FOUND',404);
+   const shift=source.rows[0],start=new Date(p.startsAt),end=new Date(p.endsAt);
+   if(start>=end||start<new Date(shift.starts_at)||end>new Date(shift.ends_at))throw new ScheduleError('INVALID_COVER_WINDOW',400);
+   if(end.getTime()<=Date.now())throw new ScheduleError('SHIFT_IN_PAST');
+   await lockEmployees(c,a.companyId,[shift.employee_id,p.employeeId]);
+   const missing=await c.query('select 1 from employee_unavailability where company_id=$1 and employee_id=$2 and active=true and starts_at<=$3 and (ends_at is null or ends_at>=$4)',[a.companyId,shift.employee_id,start,end]);
+   if(!missing.rowCount)throw new ScheduleError('COVER_WINDOW_NOT_ABSENT');
+   const window={...shift,starts_at:start,ends_at:end,break_minutes:0};
+   const options=await coverOptions(c,a.companyId,window);
+   if(!options.candidates.some(row=>row.employeeId===p.employeeId))throw new ScheduleError('COVER_NO_LONGER_AVAILABLE');
+   const created=await c.query('insert into shifts(company_id,employee_id,branch_id,starts_at,ends_at,break_minutes,published) values($1,$2,$3,$4,$5,0,false) returning id',[a.companyId,p.employeeId,shift.branch_id,start,end]);
+   await audit(c,a,'CREATE_PARTIAL_COVER_DRAFT','SHIFT',created.rows[0].id);
+   return{ok:true,draftShiftId:created.rows[0].id,originalShiftId:shiftId,published:false,requiresManagerApproval:true};
+  });
+ });
  route('GET','/v1/admin/scheduling/shifts/:shiftId/cover',async(req,a)=>{const shift=id(req,'shiftId');const r=await db.query('select * from shifts where id=$1 and company_id=$2',[shift,a.companyId]);if(!r.rowCount)throw new ScheduleError('SHIFT_NOT_FOUND',404);const attendance=await db.query('select 1 from attendance_events where shift_id=$1 limit 1',[shift]);if(attendance.rowCount)throw new ScheduleError('SHIFT_HAS_ATTENDANCE');return{ok:true,...await coverOptions(db,a.companyId,r.rows[0])}});
  route('POST','/v1/admin/scheduling/shifts/:shiftId/cover',async(req,a)=>{
   const shift=id(req,'shiftId'),p=z.object({employeeId:z.uuid()}).parse(req.body);return tx(async c=>{const r=await c.query('select * from shifts where id=$1 and company_id=$2',[shift,a.companyId]);if(!r.rowCount)throw new ScheduleError('SHIFT_NOT_FOUND',404);const original=r.rows[0];if(new Date(original.ends_at).getTime()<=Date.now())throw new ScheduleError('SHIFT_IN_PAST');await lockEmployees(c,a.companyId,[original.employee_id,p.employeeId]);const locked=await c.query('select * from shifts where id=$1 and company_id=$2 for update',[shift,a.companyId]);if(!locked.rowCount||locked.rows[0].employee_id!==original.employee_id)throw new ScheduleError('SCHEDULE_CHANGED_RETRY');Object.assign(original,locked.rows[0]);const attendance=await c.query('select 1 from attendance_events where shift_id=$1 limit 1',[shift]);if(attendance.rowCount)throw new ScheduleError('SHIFT_HAS_ATTENDANCE');const options=await coverOptions(c,a.companyId,original);if(!options.candidates.some(row=>row.employeeId===p.employeeId))throw new ScheduleError('COVER_NO_LONGER_AVAILABLE');await c.query('update shifts set employee_id=$1 where id=$2 and company_id=$3',[p.employeeId,shift,a.companyId]);if(original.published){await notice(c,a.companyId,original.employee_id,'A shift was reassigned by your manager. Check your updated schedule.');await notice(c,a.companyId,p.employeeId,'Your manager assigned you a replacement shift. Check your updated schedule.')}await audit(c,a,'ASSIGN_SHIFT_COVER','SHIFT',shift);return{ok:true}});
