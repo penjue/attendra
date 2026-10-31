@@ -95,7 +95,7 @@ export function registerSchedulingRoutes(app:FastifyInstance,db:Pick<Pool,'query
    const row=current.rows[0];if(!['INJURY','SICKNESS'].includes(row.category)||row.ends_at!==null)throw new ScheduleError('END_ABSENCE_NOT_ALLOWED',409);
    await lockEmployees(c,a.companyId,[row.employee_id]);
    const bounds=await c.query('select ($1::timestamptz at time zone timezone)::date::text as start,($2::date+1)::timestamp at time zone timezone as finish from companies where id=$3',[row.starts_at,p.lastAbsentDate,a.companyId]);
-   if(!validDateRange(bounds.rows[0].start,p.lastAbsentDate,367))throw new ScheduleError('INVALID_ABSENCE_END',400);
+   if(p.lastAbsentDate<bounds.rows[0].start)throw new ScheduleError('INVALID_ABSENCE_END',400);
    await c.query('update employee_unavailability set ends_at=$1 where id=$2 and company_id=$3',[bounds.rows[0].finish,absence,a.companyId]);
    await notice(c,a.companyId,row.employee_id,'Your manager recorded the end of your absence. Check your schedule.');
    await audit(c,a,'END_UNAVAILABILITY','EMPLOYEE',row.employee_id);return{ok:true,id:absence,lastAbsentDate:p.lastAbsentDate};
