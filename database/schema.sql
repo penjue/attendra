@@ -281,6 +281,9 @@ CREATE TABLE IF NOT EXISTS employee_unavailability (
 );
 -- Open-ended sickness and injury records may omit ends_at; existing finite records are unchanged.
 ALTER TABLE employee_unavailability ALTER COLUMN ends_at DROP NOT NULL;
+-- Only sickness and injury may remain open-ended.
+ALTER TABLE employee_unavailability DROP CONSTRAINT IF EXISTS employee_unavailability_open_end_category_check;
+ALTER TABLE employee_unavailability ADD CONSTRAINT employee_unavailability_open_end_category_check CHECK (ends_at IS NOT NULL OR category IN ('SICKNESS','INJURY'));
 CREATE INDEX IF NOT EXISTS idx_unavailability_employee_time ON employee_unavailability(company_id,employee_id,starts_at,ends_at) WHERE active=true;
 ALTER TABLE shifts ADD COLUMN IF NOT EXISTS published boolean NOT NULL DEFAULT true;
 ALTER TABLE shifts ADD COLUMN IF NOT EXISTS pattern_id uuid REFERENCES shift_patterns(id) ON DELETE SET NULL;
