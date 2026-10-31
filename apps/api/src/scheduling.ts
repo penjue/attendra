@@ -122,7 +122,13 @@ export function registerSchedulingRoutes(app:FastifyInstance,db:Pick<Pool,'query
   const merged: {startsAt:Date;endsAt:Date}[]=[];
   for(const interval of intervals){const start=new Date(interval.startsAt),end=new Date(interval.endsAt),last=merged.at(-1);if(last&&start<=last.endsAt){if(end>last.endsAt)last.endsAt=end;}else merged.push({startsAt:start,endsAt:end});}
   const uncoveredHours=merged.reduce((sum,interval)=>sum+(interval.endsAt.getTime()-interval.startsAt.getTime())/3600000,0);
-  return{ok:true,shiftId,employeeId:shift.employee_id,intervals:merged,uncoveredHours,requiresManagerApproval:true,originalShiftUnchanged:true};
+  const suggestions=[];
+  for(const interval of merged){
+   const window={...shift,starts_at:interval.startsAt,ends_at:interval.endsAt,break_minutes:0};
+   const options=await coverOptions(db,a.companyId,window);
+   suggestions.push({startsAt:interval.startsAt,endsAt:interval.endsAt,hours:(interval.endsAt.getTime()-interval.startsAt.getTime())/3600000,requiredRole:options.requiredRole,candidates:options.candidates});
+  }
+  return{ok:true,shiftId,employeeId:shift.employee_id,intervals:merged,uncoveredHours,suggestions,requiresManagerApproval:true,originalShiftUnchanged:true};
  });
  route('GET','/v1/admin/scheduling/shifts/:shiftId/cover',async(req,a)=>{const shift=id(req,'shiftId');const r=await db.query('select * from shifts where id=$1 and company_id=$2',[shift,a.companyId]);if(!r.rowCount)throw new ScheduleError('SHIFT_NOT_FOUND',404);const attendance=await db.query('select 1 from attendance_events where shift_id=$1 limit 1',[shift]);if(attendance.rowCount)throw new ScheduleError('SHIFT_HAS_ATTENDANCE');return{ok:true,...await coverOptions(db,a.companyId,r.rows[0])}});
  route('POST','/v1/admin/scheduling/shifts/:shiftId/cover',async(req,a)=>{
