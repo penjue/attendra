@@ -68,10 +68,18 @@ test('PostgreSQL scheduling: migrations, isolation, drafts, exceptions, cover an
    const sickness=(await success('POST','unavailability',{employeeId:cover,fromDate:'2099-06-20',toDate:null,category:'SICKNESS'})).id;
    const before=await pool.query('select ends_at from employee_unavailability where id=$1',[sickness]);
    assert.equal(before.rows[0].ends_at,null);
+   const future=await success('GET','unavailability?from=2099-06-25&to=2099-06-25');
+   assert.ok(future.unavailability.some(a=>a.id===sickness&&a.endsAt===null),'Open-ended sickness must remain visible on future dates');
+   const unavailable=await request('POST','drafts',{employeeIds:[cover],branchId:branch,date:'2099-06-25',startTime:'08:00',endTime:'17:00',breakMinutes:60});
+   assert.equal(unavailable.statusCode,409,'Open-ended sickness must prevent future assignments');
+   const invalidEnd=await request('PUT',`unavailability/${sickness}/end`,{lastAbsentDate:'2099-06-19'});
+   assert.equal(invalidEnd.statusCode,400,'Return date must not precede absence start');
    const ended=await success('PUT',`unavailability/${sickness}/end`,{lastAbsentDate:'2099-06-20'});
    assert.equal(ended.lastAbsentDate,'2099-06-20');
    const after=await pool.query('select ends_at from employee_unavailability where id=$1',[sickness]);
    assert.ok(after.rows[0].ends_at);
+   const resumed=await request('POST','drafts',{employeeIds:[cover],branchId:branch,date:'2099-06-25',startTime:'08:00',endTime:'17:00',breakMinutes:60});
+   assert.equal(resumed.statusCode,200,resumed.body);
   });
   await t.test('cover excludes overlapping shifts and mismatched roles and is revalidated at assignment',async()=>{
    for(const id of [cover,overlap])await success('PUT',`profiles/${id}`,{jobRole:'Barista',maxWeeklyHours:40,allowedBranchIds:[branch]});
