@@ -274,11 +274,16 @@ CREATE TABLE IF NOT EXISTS employee_unavailability (
  employee_id uuid NOT NULL REFERENCES employees(id) ON DELETE CASCADE,
  starts_at timestamptz NOT NULL,
  ends_at timestamptz NOT NULL,
- category text NOT NULL CHECK (category IN ('ABSENCE','INJURY','LEAVE','DAY_OFF')),
+ category text NOT NULL CHECK (category IN ('ABSENCE','INJURY','LEAVE','DAY_OFF','SICKNESS')),
  active boolean NOT NULL DEFAULT true,
  created_at timestamptz NOT NULL DEFAULT now(),
  CHECK (ends_at>starts_at)
 );
+-- Open-ended sickness and injury records may omit ends_at; existing finite records are unchanged.
+ALTER TABLE employee_unavailability ALTER COLUMN ends_at DROP NOT NULL;
+-- Only sickness and injury may remain open-ended.
+ALTER TABLE employee_unavailability DROP CONSTRAINT IF EXISTS employee_unavailability_open_end_category_check;
+ALTER TABLE employee_unavailability ADD CONSTRAINT employee_unavailability_open_end_category_check CHECK (ends_at IS NOT NULL OR category IN ('SICKNESS','INJURY'));
 CREATE INDEX IF NOT EXISTS idx_unavailability_employee_time ON employee_unavailability(company_id,employee_id,starts_at,ends_at) WHERE active=true;
 ALTER TABLE shifts ADD COLUMN IF NOT EXISTS published boolean NOT NULL DEFAULT true;
 ALTER TABLE shifts ADD COLUMN IF NOT EXISTS pattern_id uuid REFERENCES shift_patterns(id) ON DELETE SET NULL;
@@ -306,10 +311,10 @@ BEGIN
   RAISE EXCEPTION 'SHIFT_HAS_ATTENDANCE' USING ERRCODE='P0001';
  END IF;
  IF NEW.break_minutes>=extract(epoch FROM(NEW.ends_at-NEW.starts_at))/60 THEN RAISE EXCEPTION 'BREAK_EXCEEDS_SHIFT' USING ERRCODE='P0001'; END IF;
- IF EXISTS(SELECT 1 FROM shifts WHERE company_id=NEW.company_id AND employee_id=NEW.employee_id AND id<>NEW.id AND starts_at<NEW.ends_at AND ends_at>NEW.starts_at) THEN
+ IF EXISTS(SELECT 1 FROM shifts WHERE company_id=NEW.company_id AND employee_id=NEW.employee_id AND id<>NEW.id AND starts_at<NEW.ends_at AND (ends_at IS NULL OR ends_at>NEW.starts_at)) THEN
   RAISE EXCEPTION 'SHIFT_OVERLAP' USING ERRCODE='P0001';
  END IF;
- IF NEW.published AND EXISTS(SELECT 1 FROM employee_unavailability WHERE company_id=NEW.company_id AND employee_id=NEW.employee_id AND active=true AND starts_at<NEW.ends_at AND ends_at>NEW.starts_at) THEN
+ IF NEW.published AND EXISTS(SELECT 1 FROM employee_unavailability WHERE company_id=NEW.company_id AND employee_id=NEW.employee_id AND active=true AND starts_at<NEW.ends_at AND (ends_at IS NULL OR ends_at>NEW.starts_at)) THEN
   RAISE EXCEPTION 'EMPLOYEE_UNAVAILABLE' USING ERRCODE='P0001';
  END IF;
  SELECT * INTO profile FROM employee_schedule_profiles WHERE employee_id=NEW.employee_id AND company_id=NEW.company_id;
@@ -322,9 +327,7 @@ BEGIN
  hours_limit:=coalesce(profile.max_weekly_hours,40);
  SELECT coalesce(sum(extract(epoch FROM(ends_at-starts_at))/3600-break_minutes/60.0),0) INTO scheduled_hours
  FROM shifts WHERE company_id=NEW.company_id AND employee_id=NEW.employee_id AND id<>NEW.id AND starts_at>=week_start AND starts_at<week_end;
- IF scheduled_hours+extract(epoch FROM(NEW.ends_at-NEW.starts_at))/3600-NEW.break_minutes/60.0>hours_limit THEN
-  RAISE EXCEPTION 'WEEKLY_HOURS_EXCEEDED' USING ERRCODE='P0001';
- END IF;
+ -- Weekly hours are advisory: managers may assign additional hours, with dashboard warnings.
  RETURN NEW;
 END;
 $$ LANGUAGE plpgsql;
@@ -341,7 +344,7 @@ BEGIN
  IF NEW.source IN ('TABLET','EMPLOYEE_QR') AND NEW.shift_id IS NOT NULL AND NEW.action='CHECK_IN' THEN
   IF NOT EXISTS(SELECT 1 FROM shifts WHERE id=NEW.shift_id AND published=true) THEN RAISE EXCEPTION 'SHIFT_NOT_PUBLISHED' USING ERRCODE='P0001'; END IF;
   IF EXISTS(SELECT 1 FROM employee_unavailability u JOIN shifts s ON s.id=NEW.shift_id
-   WHERE u.employee_id=NEW.employee_id AND u.company_id=NEW.company_id AND u.active=true AND u.starts_at<s.ends_at AND u.ends_at>s.starts_at) THEN
+   WHERE u.employee_id=NEW.employee_id AND u.company_id=NEW.company_id AND u.active=true AND u.starts_at<s.ends_at AND (u.ends_at IS NULL OR u.ends_at>s.starts_at)) THEN
    RAISE EXCEPTION 'EMPLOYEE_UNAVAILABLE' USING ERRCODE='P0001';
   END IF;
  END IF;
@@ -351,3 +354,24 @@ $$ LANGUAGE plpgsql;
 DROP TRIGGER IF EXISTS trg_validate_employee_shift_attendance ON attendance_events;
 CREATE TRIGGER trg_validate_employee_shift_attendance BEFORE INSERT ON attendance_events
 FOR EACH ROW EXECUTE FUNCTION validate_employee_shift_attendance();
+
+-- Manager-controlled recurring regular days off.
+CREATE TABLE IF NOT EXISTS employee_day_off_rules (
+ id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+ company_id uuid NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+ employee_id uuid NOT NULL REFERENCES employees(id) ON DELETE CASCADE,
+ frequency text NOT NULL CHECK (frequency IN ('WEEKLY','MONTHLY')),
+ weekdays integer[] NOT NULL DEFAULT '{}',
+ month_days integer[] NOT NULL DEFAULT '{}',
+ starts_on date NOT NULL,
+ ends_on date,
+ active boolean NOT NULL DEFAULT true,
+ created_at timestamptz NOT NULL DEFAULT now(),
+ CHECK (ends_on IS NULL OR ends_on >= starts_on),
+ CHECK ((frequency='WEEKLY' AND cardinality(weekdays)>0 AND cardinality(month_days)=0) OR (frequency='MONTHLY' AND cardinality(month_days)>0 AND cardinality(weekdays)=0))
+);
+CREATE INDEX IF NOT EXISTS idx_day_off_rules_active ON employee_day_off_rules(company_id,employee_id,starts_on) WHERE active=true;
+
+-- Existing installations require the absence category constraint to be refreshed.
+ALTER TABLE employee_unavailability DROP CONSTRAINT IF EXISTS employee_unavailability_category_check;
+ALTER TABLE employee_unavailability ADD CONSTRAINT employee_unavailability_category_check CHECK (category IN ('ABSENCE','INJURY','LEAVE','DAY_OFF','SICKNESS'));
