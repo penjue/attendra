@@ -81,6 +81,11 @@ test('PostgreSQL scheduling: migrations, isolation, drafts, exceptions, cover an
    const resumed=await request('POST','drafts',{employeeIds:[cover],branchId:branch,date:'2099-06-25',startTime:'08:00',endTime:'17:00',breakMinutes:60});
    assert.equal(resumed.statusCode,200,resumed.body);
   });
+  await t.test('database prevents open-ended annual leave',async()=>{
+   await assert.rejects(pool.query("insert into employee_unavailability(company_id,employee_id,starts_at,ends_at,category) values($1,$2,$3,null,'LEAVE')",[company,wrongRole,'2099-07-01T08:00:00Z']),e=>e.constraint==='employee_unavailability_open_end_category_check');
+   const leave=await request('POST','unavailability',{employeeId:wrongRole,fromDate:'2099-07-01',toDate:null,category:'LEAVE'});
+   assert.equal(leave.statusCode,400);
+  });
   await t.test('cover excludes overlapping shifts and mismatched roles and is revalidated at assignment',async()=>{
    for(const id of [cover,overlap])await success('PUT',`profiles/${id}`,{jobRole:'Barista',maxWeeklyHours:40,allowedBranchIds:[branch]});
    await success('PUT',`profiles/${wrongRole}`,{jobRole:'Cashier',maxWeeklyHours:40,allowedBranchIds:[branch]});
