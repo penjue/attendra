@@ -125,6 +125,34 @@ test('PostgreSQL scheduling: migrations, isolation, drafts, exceptions, cover an
    const leave=await request('POST','unavailability',{employeeId:wrongRole,fromDate:'2099-07-01',toDate:null,category:'LEAVE'});
    assert.equal(leave.statusCode,400);
   });
+  await t.test('manager partial cover creates an unpublished four-hour draft without changing the original shift',async()=>{
+   const date='2099-07-15';
+   await success('PUT',`profiles/${employee}`,{jobRole:'Barista',maxWeeklyHours:40,allowedBranchIds:[branch]});
+   await success('PUT',`profiles/${cover}`,{jobRole:'Barista',maxWeeklyHours:40,allowedBranchIds:[branch]});
+   await success('POST','drafts',{employeeIds:[employee],branchId:branch,date,startTime:'08:00',endTime:'17:00',breakMinutes:60});
+   const original=(await success('GET',`calendar?from=${date}&to=${date}`)).shifts.find(s=>s.employeeId===employee);
+   assert.ok(original);
+   const absence=(await success('POST','unavailability',{employeeId:employee,fromDate:date,toDate:date,category:'ABSENCE',startTime:'10:00',endTime:'14:00'})).id;
+   const preview=await success('GET',`shifts/${original.id}/partial-cover`);
+   assert.equal(preview.uncoveredHours,4);
+   assert.equal(preview.suggestions.length,1);
+   assert.ok(preview.suggestions[0].candidates.some(c=>c.employeeId===cover));
+   const startsAt='2099-07-15T09:00:00.000Z',endsAt='2099-07-15T13:00:00.000Z';
+   const assigned=await success('POST',`shifts/${original.id}/partial-cover`,{employeeId:cover,startsAt,endsAt});
+   assert.equal(assigned.published,false);
+   const draft=(await pool.query('select employee_id,starts_at,ends_at,published from shifts where id=$1',[assigned.draftShiftId])).rows[0];
+   assert.equal(draft.employee_id,cover);
+   assert.equal(draft.starts_at.toISOString(),startsAt);
+   assert.equal(draft.ends_at.toISOString(),endsAt);
+   assert.equal(draft.published,false);
+   const unchanged=(await pool.query('select employee_id,starts_at,ends_at from shifts where id=$1',[original.id])).rows[0];
+   assert.equal(unchanged.employee_id,employee);
+   assert.equal(unchanged.starts_at.toISOString(),'2099-07-15T07:00:00.000Z');
+   assert.equal(unchanged.ends_at.toISOString(),'2099-07-15T16:00:00.000Z');
+   const repeated=await request('POST',`shifts/${original.id}/partial-cover`,{employeeId:cover,startsAt,endsAt});
+   assert.equal(repeated.statusCode,409,'Duplicate cover must be rejected');
+   await success('DELETE',`unavailability/${absence}`);
+  });
   await t.test('cover excludes overlapping shifts and mismatched roles and is revalidated at assignment',async()=>{
    for(const id of [cover,overlap])await success('PUT',`profiles/${id}`,{jobRole:'Barista',maxWeeklyHours:40,allowedBranchIds:[branch]});
    await success('PUT',`profiles/${wrongRole}`,{jobRole:'Cashier',maxWeeklyHours:40,allowedBranchIds:[branch]});
