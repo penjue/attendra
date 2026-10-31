@@ -74,6 +74,8 @@ test('PostgreSQL scheduling: migrations, isolation, drafts, exceptions, cover an
    assert.equal(unavailable.statusCode,409,'Open-ended sickness must prevent future assignments');
    const invalidEnd=await request('PUT',`unavailability/${sickness}/end`,{lastAbsentDate:'2099-06-19'});
    assert.equal(invalidEnd.statusCode,400,'Return date must not precede absence start');
+   const unchanged=await pool.query('select ends_at from employee_unavailability where id=$1',[sickness]);
+   assert.equal(unchanged.rows[0].ends_at,null,'Invalid return date must not close the absence');
    const ended=await success('PUT',`unavailability/${sickness}/end`,{lastAbsentDate:'2099-06-20'});
    assert.equal(ended.lastAbsentDate,'2099-06-20');
    const after=await pool.query('select ends_at from employee_unavailability where id=$1',[sickness]);
