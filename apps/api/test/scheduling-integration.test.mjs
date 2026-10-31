@@ -81,6 +81,13 @@ test('PostgreSQL scheduling: migrations, isolation, drafts, exceptions, cover an
    const resumed=await request('POST','drafts',{employeeIds:[cover],branchId:branch,date:'2099-06-25',startTime:'08:00',endTime:'17:00',breakMinutes:60});
    assert.equal(resumed.statusCode,200,resumed.body);
   });
+  await t.test('manager can close a sickness absence lasting more than a year',async()=>{
+   const sickness=(await success('POST','unavailability',{employeeId:wrongRole,fromDate:'2097-01-01',toDate:null,category:'SICKNESS'})).id;
+   const ended=await success('PUT',`unavailability/${sickness}/end`,{lastAbsentDate:'2099-01-02'});
+   assert.equal(ended.lastAbsentDate,'2099-01-02');
+   const stored=await pool.query('select ends_at from employee_unavailability where id=$1',[sickness]);
+   assert.ok(stored.rows[0].ends_at);
+  });
   await t.test('database prevents open-ended annual leave',async()=>{
    await assert.rejects(pool.query("insert into employee_unavailability(company_id,employee_id,starts_at,ends_at,category) values($1,$2,$3,null,'LEAVE')",[company,wrongRole,'2099-07-01T08:00:00Z']),e=>e.constraint==='employee_unavailability_open_end_category_check');
    const leave=await request('POST','unavailability',{employeeId:wrongRole,fromDate:'2099-07-01',toDate:null,category:'LEAVE'});
