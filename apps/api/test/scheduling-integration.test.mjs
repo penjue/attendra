@@ -82,6 +82,8 @@ test('PostgreSQL scheduling: migrations, isolation, drafts, exceptions, cover an
    assert.equal(duplicateEnd.statusCode,409,'An already ended absence cannot be ended again');
    const afterDuplicate=await pool.query('select ends_at from employee_unavailability where id=$1',[sickness]);
    assert.equal(afterDuplicate.rows[0].ends_at.toISOString(),after.rows[0].ends_at.toISOString(),'Rejected duplicate must preserve the original end date');
+   const afterReturn=await success('GET','unavailability?from=2099-06-25&to=2099-06-25');
+   assert.ok(!afterReturn.unavailability.some(a=>a.id===sickness),'Ended sickness must not appear as unavailable on later dates');
    const resumed=await request('POST','drafts',{employeeIds:[cover],branchId:branch,date:'2099-06-25',startTime:'08:00',endTime:'17:00',breakMinutes:60});
    assert.equal(resumed.statusCode,200,resumed.body);
   });
