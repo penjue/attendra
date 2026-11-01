@@ -10,7 +10,7 @@ const input = z.object({
  startTime:z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/),
  endTime:z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/),
  endDayOffset:z.number().int().min(0).max(1).default(0),
- breakMinutes:z.number().int().min(0).max(720).default(0)})).min(1).max(500)
+ breakMinutes:z.number().int().min(0).max(720).optional().transform(()=>0)})).min(1).max(500)
 }).superRefine((p,ctx)=>{
  const day=new Date(p.anchorStartDate+'T00:00:00Z');
  if(p.periodType==='WEEKLY' && day.getUTCDay()!==1)ctx.addIssue({code:'custom',message:'Weekly rota must begin on Monday'});
@@ -19,7 +19,7 @@ const input = z.object({
  for(const [i,s] of p.shifts.entries()){
   if(s.dayOffset >= (p.periodType==='WEEKLY'?7:monthDays))ctx.addIssue({code:'custom',path:['shifts',i,'dayOffset'],message:'Day outside rota period'});
   const duration=((Number(s.endTime.slice(0,2))*60+Number(s.endTime.slice(3)))-(Number(s.startTime.slice(0,2))*60+Number(s.startTime.slice(3)))+s.endDayOffset*1440);
-  if(duration<=s.breakMinutes||duration>1440)ctx.addIssue({code:'custom',path:['shifts',i],message:'Invalid shift duration'});
+  if(duration<=0||duration>1440)ctx.addIssue({code:'custom',path:['shifts',i],message:'Invalid shift duration'});
  }
 });
 const recurrenceInput=z.object({endMode:z.enum(['UNTIL_STOPPED','ON_DATE']),endDate:date.optional()}).refine(p=>p.endMode==='ON_DATE'?!!p.endDate:!p.endDate,{message:'End date must match end mode'});
