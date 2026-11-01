@@ -8,7 +8,7 @@ export function ManualRota({api,token,employees,branches}:{api:string;token:stri
  const [templates,setTemplates]=useState<Template[]>([]),[recurrences,setRecurrences]=useState<Recurrence[]>([]);
  const [message,setMessage]=useState(''),[busy,setBusy]=useState(false);
  const [period,setPeriod]=useState<'WEEKLY'|'MONTHLY'>('WEEKLY'),[branch,setBranch]=useState(''),[anchor,setAnchor]=useState(''),[employee,setEmployee]=useState('');
- const [dayOffset,setDayOffset]=useState(0),[start,setStart]=useState('07:00'),[end,setEnd]=useState('15:00'),[breakMinutes,setBreakMinutes]=useState(60);
+ const [dayOffset,setDayOffset]=useState(0),[start,setStart]=useState('07:00'),[end,setEnd]=useState('15:00');
  const [draftShifts,setDraftShifts]=useState<RotaShift[]>([]),[editingIndex,setEditingIndex]=useState<number|null>(null),[zoom,setZoom]=useState(90);
  const [endMode,setEndMode]=useState<'UNTIL_STOPPED'|'ON_DATE'>('UNTIL_STOPPED'),[endDate,setEndDate]=useState('');
  const [restoreNotice,setRestoreNotice]=useState(false);
@@ -44,11 +44,10 @@ export function ManualRota({api,token,employees,branches}:{api:string;token:stri
  const execute=async(fn:()=>Promise<void>)=>{setBusy(true);setMessage('');try{await fn();await refresh()}catch(e){setMessage((e as Error).message)}finally{setBusy(false)}};
  const addShift=()=>{if(!employee){setMessage('Select an employee first.');return}
   if(!Number.isInteger(dayOffset)||dayOffset<0||dayOffset>(period==='WEEKLY'?6:30)){setMessage('Invalid day offset.');return}
-  if(!Number.isFinite(breakMinutes)||breakMinutes<0){setMessage('Invalid break duration.');return}
-  const shift={employeeId:employee,dayOffset,startTime:start,endTime:end,breakMinutes,endDayOffset:end<=start?1:0};
+  const shift={employeeId:employee,dayOffset,startTime:start,endTime:end,breakMinutes:0,endDayOffset:end<=start?1:0};
   if(draftShifts.some((s,i)=>i!==editingIndex&&s.employeeId===employee&&s.dayOffset===dayOffset&&s.startTime===start&&s.endTime===end)){setMessage('This shift is already in the rota.');return}
   setDraftShifts(v=>editingIndex===null?[...v,shift]:v.map((s,i)=>i===editingIndex?shift:s));setMessage(editingIndex===null?'Shift added to the rota draft.':'Shift updated.');setEditingIndex(null)};
- const editShift=(s:RotaShift,i:number)=>{setEmployee(s.employeeId);setDayOffset(s.dayOffset);setStart(s.startTime);setEnd(s.endTime);setBreakMinutes(s.breakMinutes);setEditingIndex(i);setMessage('Edit the fields, then save shift changes.')};
+ const editShift=(s:RotaShift,i:number)=>{setEmployee(s.employeeId);setDayOffset(s.dayOffset);setStart(s.startTime);setEnd(s.endTime);setEditingIndex(i);setMessage('Edit the fields, then save shift changes.')};
  const sortedShifts=draftShifts.map((s,i)=>({s,i})).sort((a,b)=>a.s.dayOffset-b.s.dayOffset||a.s.startTime.localeCompare(b.s.startTime));
  const dayLabel=(n:number)=>period==='WEEKLY'?(['Monday','Tuesday','Wednesday','Thursday','Friday','Saturday','Sunday'][n]||'Day '+(n+1)):'Day '+(n+1);
  const create=()=>void execute(async()=>{
@@ -81,7 +80,7 @@ export function ManualRota({api,token,employees,branches}:{api:string;token:stri
 
  <label>Repeat ends<select value={endMode} onChange={e=>setEndMode(e.target.value as 'UNTIL_STOPPED'|'ON_DATE')}><option value="UNTIL_STOPPED">When manager stops it</option><option value="ON_DATE">On selected date</option></select></label>{endMode==='ON_DATE'&&<label>End date<input type="date" value={endDate} onChange={e=>setEndDate(e.target.value)}/></label>}
  <button type="button" disabled={busy||!employee} onClick={addShift}>{editingIndex===null?'Add shift to rota':'Save shift changes'}</button>{editingIndex!==null&&<button type="button" onClick={()=>{setEditingIndex(null);setMessage('Editing cancelled.')}}>Cancel edit</button>}
- <div><strong>Shifts in this rota: {draftShifts.length}</strong>{sortedShifts.map(({s,i})=><div className="attendanceRow" key={i} style={{padding:'4px 6px',gap:6,fontSize:'0.85em'}}><span>{dayLabel(s.dayOffset)} · {employees.find(e=>e.id===s.employeeId)?.name||'Employee'} · {s.startTime}–{s.endTime} · {s.breakMinutes} min break</span><div style={{display:'flex',gap:4}}><button type="button" disabled={busy} onClick={()=>editShift(s,i)}>Edit</button><button type="button" disabled={busy} onClick={()=>{setDraftShifts(v=>v.filter((_,j)=>j!==i));setEditingIndex(null)}}>Remove</button></div></div>)}</div>
+ <div><strong>Shifts in this rota: {draftShifts.length}</strong>{sortedShifts.map(({s,i})=><div className="attendanceRow" key={i} style={{padding:'4px 6px',gap:6,fontSize:'0.85em'}}><span>{dayLabel(s.dayOffset)} · {employees.find(e=>e.id===s.employeeId)?.name||'Employee'} · {s.startTime}–{s.endTime}</span><div style={{display:'flex',gap:4}}><button type="button" disabled={busy} onClick={()=>editShift(s,i)}>Edit</button><button type="button" disabled={busy} onClick={()=>{setDraftShifts(v=>v.filter((_,j)=>j!==i));setEditingIndex(null)}}>Remove</button></div></div>)}</div>
  <button type="button" className="primary" disabled={busy||!draftShifts.length} onClick={create}>Save rota draft</button>
  </div>
  <p>Build the full weekly or monthly schedule by adding shifts above. Saved patterns cannot yet be edited. Generated shifts must be reviewed and published separately in the existing calendar.</p>
