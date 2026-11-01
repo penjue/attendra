@@ -1,9 +1,9 @@
 name: CI
 on:
   push:
-    branches: [Main, develop]
+    branches: [Main, develop, integration/manual-rota-production-2026-11]
   pull_request:
-    branches: [Main, develop]
+    branches: [Main, develop, integration/manual-rota-production-2026-11]
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -28,6 +28,10 @@ jobs:
       - run: npm install
       - run: npm run typecheck
       - run: npm run build
+      - name: Apply schema to isolated CI PostgreSQL
+        run: npm --workspace @attendra/api run migrate
+        env:
+          DATABASE_URL: postgres://postgres:postgres@localhost:5432/attendra_test
       - run: npm test
         env:
           SCHEDULING_TEST_DATABASE_URL: postgres://postgres:postgres@localhost:5432/attendra_test
