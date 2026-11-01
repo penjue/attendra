@@ -76,7 +76,7 @@ export function ManualRota({api,token,employees,branches}:{api:string;token:stri
  <label>Shift day<select value={dayOffset} onChange={e=>setDayOffset(Number(e.target.value))}>{Array.from({length:period==='WEEKLY'?7:(anchor?new Date(Number(anchor.slice(0,4)),Number(anchor.slice(5,7)),0).getDate():31)},(_,i)=><option key={i} value={i}>{period==='WEEKLY'?['Monday','Tuesday','Wednesday','Thursday','Friday','Saturday','Sunday'][i]:'Day '+(i+1)}</option>)}</select></label>
  <label>Start time<input type="time" value={start} onChange={e=>setStart(e.target.value)}/></label>
  <label>End time<input type="time" value={end} onChange={e=>setEnd(e.target.value)}/></label>
- <label>Unpaid break (minutes)<input type="number" min="0" max="720" value={breakMinutes} onChange={e=>setBreakMinutes(Number(e.target.value))}/></label>
+ 
 
  <label>Repeat ends<select value={endMode} onChange={e=>setEndMode(e.target.value as 'UNTIL_STOPPED'|'ON_DATE')}><option value="UNTIL_STOPPED">When manager stops it</option><option value="ON_DATE">On selected date</option></select></label>{endMode==='ON_DATE'&&<label>End date<input type="date" value={endDate} onChange={e=>setEndDate(e.target.value)}/></label>}
  <button type="button" disabled={busy||!employee} onClick={addShift}>{editingIndex===null?'Add shift to rota':'Save shift changes'}</button>{editingIndex!==null&&<button type="button" onClick={()=>{setEditingIndex(null);setMessage('Editing cancelled.')}}>Cancel edit</button>}
