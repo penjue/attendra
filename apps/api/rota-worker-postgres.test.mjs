@@ -35,8 +35,8 @@ test('scheduled worker generates unpublished PostgreSQL drafts exactly once per 
   assert.equal(next.rows[0].day,'2026-11-09');
   const second=run();
   assert.equal(second.status,0,second.stderr+'\n'+second.stdout);
-  const after=await pool.query("select count(*)::int as n from shifts where company_id=$1",[companyId]);
-  assert.equal(after.rows[0].n,1,'repeat invocation must not duplicate an already generated period');
+  const after=await pool.query("select o.period_start::text as period,count(*)::int as n from shifts s join rota_occurrences o on o.id=s.rota_occurrence_id where s.company_id=$1 group by o.period_start order by o.period_start",[companyId]);
+  assert.deepEqual(after.rows,[{period:'2026-11-02',n:1},{period:'2026-11-09',n:1}],'repeat invocation may generate the next due week but must never duplicate a period');
  }finally{
   await pool.query('delete from rota_template_shifts where template_id=$1',[templateId]);
   await pool.query('delete from companies where id=$1',[companyId]);
