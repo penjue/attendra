@@ -488,3 +488,19 @@ DROP TRIGGER IF EXISTS trg_invalidate_shift_overtime_approvals ON shifts;
 CREATE TRIGGER trg_invalidate_shift_overtime_approvals
 AFTER INSERT OR DELETE OR UPDATE OF employee_id,company_id,starts_at,ends_at,break_minutes ON shifts
 FOR EACH ROW EXECUTE FUNCTION invalidate_shift_overtime_approvals();
+
+-- Weekly-hour limit changes alter the overtime threshold for every affected week.
+CREATE OR REPLACE FUNCTION invalidate_overtime_on_weekly_limit_change() RETURNS trigger
+LANGUAGE plpgsql AS $$
+BEGIN
+ IF OLD.max_weekly_hours IS DISTINCT FROM NEW.max_weekly_hours THEN
+   DELETE FROM shift_overtime_approvals
+   WHERE company_id=NEW.company_id AND employee_id=NEW.employee_id;
+ END IF;
+ RETURN NEW;
+END;
+$$;
+DROP TRIGGER IF EXISTS trg_invalidate_overtime_weekly_limit ON employee_schedule_profiles;
+CREATE TRIGGER trg_invalidate_overtime_weekly_limit
+AFTER UPDATE OF max_weekly_hours ON employee_schedule_profiles
+FOR EACH ROW EXECUTE FUNCTION invalidate_overtime_on_weekly_limit_change();
