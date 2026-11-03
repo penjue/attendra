@@ -82,7 +82,7 @@ export function registerRotaTemplateRoutes(app:FastifyInstance,db:Pick<Pool,'con
    t.branch_id as "branchId",t.period_type as "periodType",t.approved_version as "approvedVersion",
    (select count(*)::int from rota_occurrences o where o.recurrence_id=r.id) as "occurrenceCount"
    from rota_recurrences r join rota_templates t on t.id=r.template_id
-   where t.company_id=$1 order by r.created_at desc limit 100`,[a.companyId]);
+   where t.company_id=$1 and r.deleted_at is null order by r.created_at desc limit 100`,[a.companyId]);
   return {ok:true,recurrences:result.rows};
  });
  app.get('/v1/admin/rota-recurrences/:recurrenceId/occurrences',async(req,reply)=>{
@@ -96,6 +96,14 @@ export function registerRotaTemplateRoutes(app:FastifyInstance,db:Pick<Pool,'con
    where o.recurrence_id=$1 and t.company_id=$2
    order by o.period_start desc limit 100`,[parsed.data,a.companyId]);
   return {ok:true,occurrences:result.rows};
+ });
+ app.delete('/v1/admin/rota-recurrences/:recurrenceId',async(req,reply)=>{
+  const a=requireAdmin(req,reply);if(!a)return;
+  const id=z.uuid().safeParse((req.params as {recurrenceId:string}).recurrenceId);
+  if(!id.success)return reply.code(400).send({ok:false,error:'INVALID_RECURRENCE_ID'});
+  const r=await db.query(`update rota_recurrences r set deleted_at=now(),updated_at=now() from rota_templates t
+   where r.id=$1 and r.template_id=t.id and t.company_id=$2 and r.status='STOPPED' and r.deleted_at is null returning r.id`,[id.data,a.companyId]);
+  return r.rowCount?{ok:true}:reply.code(409).send({ok:false,error:'RECURRENCE_NOT_STOPPED_OR_NOT_FOUND'});
  });
  app.post('/v1/admin/rota-recurrences/:recurrenceId/status',async(req,reply)=>{
   const a=requireAdmin(req,reply);if(!a)return;
