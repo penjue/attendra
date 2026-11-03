@@ -76,16 +76,25 @@ export function registerSchedulingRoutes(app:FastifyInstance,db:Pick<Pool,'query
    where s.company_id=$1 and s.id=$2 for update of s`,[a.companyId,shiftId]);
    if(!r.rowCount)throw new ScheduleError('SHIFT_NOT_FOUND',404);
    const sh=r.rows[0];await lockEmployees(c,a.companyId,[sh.employee_id]);
-   const weekly=await c.query(`with target as (
-     select date_trunc('week',$3::timestamptz at time zone $4)::date as week_start
-   ), bounds as (select week_start,week_start::timestamp at time zone $4 as from_at,(week_start+7)::timestamp at time zone $4 as to_at from target)
-   select b.week_start,coalesce(sum(extract(epoch from(least(x.ends_at,b.to_at)-greatest(x.starts_at,b.from_at)))/3600*
-   greatest(0,1-x.break_minutes/nullif(extract(epoch from(x.ends_at-x.starts_at))/60,0))),0)::float as total_hours
-   from bounds b left join shifts x on x.company_id=$1 and x.employee_id=$2 and x.starts_at<b.to_at and x.ends_at>b.from_at
-   group by b.week_start`,[a.companyId,sh.employee_id,sh.starts_at,sh.timezone]);
+   const weekly=await c.query(`with bounds as (
+     select date_trunc('week',$3::timestamptz at time zone $4)::date as week_start,
+     date_trunc('week',$3::timestamptz at time zone $4) at time zone $4 as from_at,
+     (date_trunc('week',$3::timestamptz at time zone $4)+interval '7 days') at time zone $4 as to_at
+   ), segments as (
+     select x.id,x.starts_at,x.ends_at,x.break_minutes,b.week_start,
+     greatest(x.starts_at,b.from_at) as segment_start,
+     least(x.ends_at,b.to_at) as segment_end
+     from bounds b join shifts x on x.company_id=$1 and x.employee_id=$2
+       and x.starts_at<b.to_at and x.ends_at>b.from_at
+   ) select week_start,
+   coalesce(sum(extract(epoch from(segment_end-segment_start))/3600*
+     greatest(0,1-break_minutes/nullif(extract(epoch from(ends_at-starts_at))/60,0))),0)::float as total_hours,
+   coalesce(sum(case when id=$5 then extract(epoch from(segment_end-segment_start))/3600*
+     greatest(0,1-break_minutes/nullif(extract(epoch from(ends_at-starts_at))/60,0)) else 0 end),0)::float as shift_hours
+   from segments group by week_start`,[a.companyId,sh.employee_id,sh.starts_at,sh.timezone,shiftId]);
+   if(!weekly.rowCount)throw new ScheduleError('SHIFT_WEEK_NOT_FOUND',409);
    const total=Number(weekly.rows[0].total_hours),limit=Number(sh.weekly_limit);
-   const duration=(new Date(sh.ends_at).getTime()-new Date(sh.starts_at).getTime())/3600000;
-   const shiftHours=Math.max(0,duration-sh.break_minutes/60);
+   const shiftHours=Number(weekly.rows[0].shift_hours);
    const overtime=Math.max(0,Math.min(shiftHours,total-limit));
    if(overtime<=0)throw new ScheduleError('NO_OVERTIME_TO_APPROVE',409);
    const approval=await c.query(`insert into shift_overtime_approvals(company_id,shift_id,employee_id,week_start,overtime_hours,pay_method,approved_hourly_rate,currency,approved_by)
