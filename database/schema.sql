@@ -441,3 +441,20 @@ CREATE INDEX IF NOT EXISTS idx_shifts_rota_occurrence ON shifts(rota_occurrence_
 -- when two manager requests arrive simultaneously.
 CREATE UNIQUE INDEX IF NOT EXISTS uq_rota_recurrence_live_template
 ON rota_recurrences(template_id) WHERE status IN ('ACTIVE','PAUSED');
+
+-- Manager-approved overtime, recorded separately from shift assignments.
+CREATE TABLE IF NOT EXISTS shift_overtime_approvals (
+ id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+ company_id uuid NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+ shift_id uuid NOT NULL REFERENCES shifts(id) ON DELETE CASCADE,
+ employee_id uuid NOT NULL REFERENCES employees(id),
+ week_start date NOT NULL,
+ overtime_hours numeric(10,2) NOT NULL CHECK(overtime_hours>0),
+ pay_method text NOT NULL CHECK(pay_method IN ('NORMAL_RATE','MULTIPLIER','CUSTOM_HOURLY')),
+ approved_hourly_rate numeric(14,4) NOT NULL CHECK(approved_hourly_rate>=0),
+ currency char(3) NOT NULL,
+ approved_by uuid REFERENCES company_admins(id) ON DELETE SET NULL,
+ approved_at timestamptz NOT NULL DEFAULT now(),
+ UNIQUE(shift_id,week_start)
+);
+CREATE INDEX IF NOT EXISTS idx_overtime_company_week ON shift_overtime_approvals(company_id,employee_id,week_start);
