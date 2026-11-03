@@ -63,6 +63,40 @@ export function registerSchedulingRoutes(app:FastifyInstance,db:Pick<Pool,'query
  round(greatest(assigned_hours-weekly_limit,0),2)::float as "unapprovedPotentialOvertimeHours"
  from weekly where assigned_hours>weekly_limit order by week_start desc,employee_id`,[a.companyId]);
  return{ok:true,overages:r.rows,notice:'Potential overtime only. No manager approval or payroll entitlement is implied.'}});
+ route('POST','/v1/admin/scheduling/shifts/:shiftId/overtime-approval',async(req,a)=>{
+  const shiftId=id(req,'shiftId');
+  const p=z.object({payMethod:z.enum(['NORMAL_RATE','MULTIPLIER','CUSTOM_HOURLY']),baseHourlyRate:z.number().finite().min(0).max(1000000).optional(),multiplier:z.number().finite().positive().max(10).optional(),customHourlyRate:z.number().finite().min(0).max(1000000).optional()}).parse(req.body);
+  if((p.payMethod==='NORMAL_RATE'||p.payMethod==='MULTIPLIER')&&p.baseHourlyRate===undefined)throw new ScheduleError('BASE_RATE_REQUIRED',400);
+  if(p.payMethod==='MULTIPLIER'&&p.multiplier===undefined)throw new ScheduleError('MULTIPLIER_REQUIRED',400);
+  if(p.payMethod==='CUSTOM_HOURLY'&&p.customHourlyRate===undefined)throw new ScheduleError('CUSTOM_RATE_REQUIRED',400);
+  const rate=p.payMethod==='CUSTOM_HOURLY'?p.customHourlyRate!:p.baseHourlyRate!*(p.payMethod==='MULTIPLIER'?p.multiplier!:1);
+  return tx(async c=>{
+   const r=await c.query(`select s.id,s.employee_id,s.starts_at,s.ends_at,s.break_minutes,co.timezone,co.currency,coalesce(pr.max_weekly_hours,40)::float as weekly_limit
+   from shifts s join companies co on co.id=s.company_id left join employee_schedule_profiles pr on pr.company_id=s.company_id and pr.employee_id=s.employee_id
+   where s.company_id=$1 and s.id=$2 for update of s`,[a.companyId,shiftId]);
+   if(!r.rowCount)throw new ScheduleError('SHIFT_NOT_FOUND',404);
+   const sh=r.rows[0];await lockEmployees(c,a.companyId,[sh.employee_id]);
+   const weekly=await c.query(`with target as (
+     select date_trunc('week',$3::timestamptz at time zone $4)::date as week_start
+   ), bounds as (select week_start,week_start::timestamp at time zone $4 as from_at,(week_start+7)::timestamp at time zone $4 as to_at from target)
+   select b.week_start,coalesce(sum(extract(epoch from(least(x.ends_at,b.to_at)-greatest(x.starts_at,b.from_at)))/3600*
+   greatest(0,1-x.break_minutes/nullif(extract(epoch from(x.ends_at-x.starts_at))/60,0))),0)::float as total_hours
+   from bounds b left join shifts x on x.company_id=$1 and x.employee_id=$2 and x.starts_at<b.to_at and x.ends_at>b.from_at
+   group by b.week_start`,[a.companyId,sh.employee_id,sh.starts_at,sh.timezone]);
+   const total=Number(weekly.rows[0].total_hours),limit=Number(sh.weekly_limit);
+   const duration=(new Date(sh.ends_at).getTime()-new Date(sh.starts_at).getTime())/3600000;
+   const shiftHours=Math.max(0,duration-sh.break_minutes/60);
+   const overtime=Math.max(0,Math.min(shiftHours,total-limit));
+   if(overtime<=0)throw new ScheduleError('NO_OVERTIME_TO_APPROVE',409);
+   const approval=await c.query(`insert into shift_overtime_approvals(company_id,shift_id,employee_id,week_start,overtime_hours,pay_method,approved_hourly_rate,currency,approved_by)
+   values($1,$2,$3,$4,$5,$6,$7,$8,$9)
+   on conflict(shift_id,week_start) do update set overtime_hours=excluded.overtime_hours,pay_method=excluded.pay_method,approved_hourly_rate=excluded.approved_hourly_rate,currency=excluded.currency,approved_by=excluded.approved_by,approved_at=now()
+   returning id,overtime_hours as "overtimeHours",approved_hourly_rate as "approvedHourlyRate",currency`,
+   [a.companyId,shiftId,sh.employee_id,weekly.rows[0].week_start,Math.round(overtime*100)/100,p.payMethod,Math.round(rate*10000)/10000,sh.currency,a.adminId||null]);
+   await audit(c,a,'APPROVE_SHIFT_OVERTIME','SHIFT',shiftId);
+   return{ok:true,approval:approval.rows[0],notice:'Approval records the manager rate. Payroll integration is not yet enabled.'};
+  });
+ });
  route('GET','/v1/admin/scheduling/assigned-hours',async(_req,a)=>{const r=await db.query(`select s.employee_id as "employeeId",s.branch_id as "branchId",count(*)::int as "shiftCount",coalesce(sum(extract(epoch from (s.ends_at-s.starts_at))/3600),0)::float as "grossHours",coalesce(sum(least(greatest(s.break_minutes,0),extract(epoch from (s.ends_at-s.starts_at))/60))/60,0)::float as "breakHours" from shifts s where s.company_id=$1 group by s.employee_id,s.branch_id`,[a.companyId]);return{ok:true,totals:r.rows}});
  route('GET','/v1/admin/scheduling/calendar',async(req,a)=>{const p=rangeSchema.parse(req.query);const result=await db.query(`select ${shiftColumns} from shifts s join employees e on e.id=s.employee_id join branches b on b.id=s.branch_id join companies co on co.id=s.company_id where s.company_id=$1 and s.starts_at<($3::date+1)::timestamp at time zone co.timezone and s.ends_at>$2::date::timestamp at time zone co.timezone order by s.starts_at,e.first_name limit 10001`,[a.companyId,p.from,p.to]);return{ok:true,shifts:result.rows.slice(0,10000),truncated:result.rows.length>10000}});
  route('GET','/v1/admin/scheduling/patterns',async(_req,a)=>{const r=await db.query(`select p.id,p.employee_id as "employeeId",p.branch_id as "branchId",p.name,p.weekdays,p.start_time::text as "startTime",p.end_time::text as "endTime",p.break_minutes as "breakMinutes",concat(e.first_name,' ',e.last_name) as "employeeName",b.name as "branchName",b.timezone from shift_patterns p join employees e on e.id=p.employee_id join branches b on b.id=p.branch_id where p.company_id=$1 and p.active=true order by p.name,e.first_name`,[a.companyId]);return{ok:true,patterns:r.rows}});
