@@ -459,24 +459,26 @@ CREATE TABLE IF NOT EXISTS shift_overtime_approvals (
 );
 CREATE INDEX IF NOT EXISTS idx_overtime_company_week ON shift_overtime_approvals(company_id,employee_id,week_start);
 
--- Revoke previously approved overtime when a shift's payable schedule changes.
--- Removing a shift cascades its approval through the shift_id foreign key.
+-- Invalidate approvals for the affected employee whenever the shift roster changes.
+-- INSERT/DELETE matter too: adding or removing a shift can change which shift
+-- crosses the weekly threshold, even if the approved shift itself is unchanged.
 CREATE OR REPLACE FUNCTION invalidate_shift_overtime_approvals() RETURNS trigger
 LANGUAGE plpgsql AS $$
 BEGIN
- IF OLD.employee_id IS DISTINCT FROM NEW.employee_id
+ IF TG_OP = 'INSERT' THEN
+   DELETE FROM shift_overtime_approvals WHERE company_id=NEW.company_id AND employee_id=NEW.employee_id;
+   RETURN NEW;
+ ELSIF TG_OP = 'DELETE' THEN
+   DELETE FROM shift_overtime_approvals WHERE company_id=OLD.company_id AND employee_id=OLD.employee_id;
+   RETURN OLD;
+ ELSIF OLD.employee_id IS DISTINCT FROM NEW.employee_id
     OR OLD.company_id IS DISTINCT FROM NEW.company_id
     OR OLD.starts_at IS DISTINCT FROM NEW.starts_at
     OR OLD.ends_at IS DISTINCT FROM NEW.ends_at
-    OR OLD.break_minutes IS DISTINCT FROM NEW.break_minutes
- THEN
-   -- Any changed shift can change which other shifts cross the weekly threshold.
-   -- Conservatively require reapproval of affected employees' overtime.
-   DELETE FROM shift_overtime_approvals
-   WHERE company_id=OLD.company_id AND employee_id=OLD.employee_id;
+    OR OLD.break_minutes IS DISTINCT FROM NEW.break_minutes THEN
+   DELETE FROM shift_overtime_approvals WHERE company_id=OLD.company_id AND employee_id=OLD.employee_id;
    IF NEW.company_id IS DISTINCT FROM OLD.company_id OR NEW.employee_id IS DISTINCT FROM OLD.employee_id THEN
-     DELETE FROM shift_overtime_approvals
-     WHERE company_id=NEW.company_id AND employee_id=NEW.employee_id;
+     DELETE FROM shift_overtime_approvals WHERE company_id=NEW.company_id AND employee_id=NEW.employee_id;
    END IF;
  END IF;
  RETURN NEW;
@@ -484,5 +486,5 @@ END;
 $$;
 DROP TRIGGER IF EXISTS trg_invalidate_shift_overtime_approvals ON shifts;
 CREATE TRIGGER trg_invalidate_shift_overtime_approvals
-AFTER UPDATE OF employee_id,company_id,starts_at,ends_at,break_minutes ON shifts
+AFTER INSERT OR DELETE OR UPDATE OF employee_id,company_id,starts_at,ends_at,break_minutes ON shifts
 FOR EACH ROW EXECUTE FUNCTION invalidate_shift_overtime_approvals();
