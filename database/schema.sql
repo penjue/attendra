@@ -420,6 +420,7 @@ CREATE TABLE IF NOT EXISTS rota_recurrences (
  updated_at timestamptz NOT NULL DEFAULT now(),
  CHECK ((end_mode='ON_DATE' AND end_date IS NOT NULL) OR (end_mode='UNTIL_STOPPED' AND end_date IS NULL))
 );
+ALTER TABLE rota_recurrences ADD COLUMN IF NOT EXISTS deleted_at timestamptz;
 CREATE INDEX IF NOT EXISTS idx_rota_recurrences_due ON rota_recurrences(status,next_period_start);
 
 CREATE TABLE IF NOT EXISTS rota_occurrences (
