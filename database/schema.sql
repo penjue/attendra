@@ -458,3 +458,25 @@ CREATE TABLE IF NOT EXISTS shift_overtime_approvals (
  UNIQUE(shift_id,week_start)
 );
 CREATE INDEX IF NOT EXISTS idx_overtime_company_week ON shift_overtime_approvals(company_id,employee_id,week_start);
+
+-- Revoke previously approved overtime when a shift's payable schedule changes.
+-- Removing a shift cascades its approval through the shift_id foreign key.
+CREATE OR REPLACE FUNCTION invalidate_shift_overtime_approvals() RETURNS trigger
+LANGUAGE plpgsql AS $$
+BEGIN
+ IF OLD.employee_id IS DISTINCT FROM NEW.employee_id
+    OR OLD.company_id IS DISTINCT FROM NEW.company_id
+    OR OLD.starts_at IS DISTINCT FROM NEW.starts_at
+    OR OLD.ends_at IS DISTINCT FROM NEW.ends_at
+    OR OLD.break_minutes IS DISTINCT FROM NEW.break_minutes
+ THEN
+   DELETE FROM shift_overtime_approvals
+   WHERE shift_id=NEW.id;
+ END IF;
+ RETURN NEW;
+END;
+$$;
+DROP TRIGGER IF EXISTS trg_invalidate_shift_overtime_approvals ON shifts;
+CREATE TRIGGER trg_invalidate_shift_overtime_approvals
+AFTER UPDATE OF employee_id,company_id,starts_at,ends_at,break_minutes ON shifts
+FOR EACH ROW EXECUTE FUNCTION invalidate_shift_overtime_approvals();
