@@ -71,11 +71,13 @@ export function registerSchedulingRoutes(app:FastifyInstance,db:Pick<Pool,'query
   if(p.payMethod==='CUSTOM_HOURLY'&&p.customHourlyRate===undefined)throw new ScheduleError('CUSTOM_RATE_REQUIRED',400);
   const rate=p.payMethod==='CUSTOM_HOURLY'?p.customHourlyRate!:p.baseHourlyRate!*(p.payMethod==='MULTIPLIER'?p.multiplier!:1);
   return tx(async c=>{
-   const r=await c.query(`select s.id,s.employee_id,s.starts_at,s.ends_at,s.break_minutes,co.timezone,co.currency,coalesce(pr.max_weekly_hours,40)::float as weekly_limit
+   const r=await c.query(`select s.id,s.employee_id,s.starts_at,s.ends_at,s.break_minutes,s.published,co.timezone,co.currency,coalesce(pr.max_weekly_hours,40)::float as weekly_limit
    from shifts s join companies co on co.id=s.company_id left join employee_schedule_profiles pr on pr.company_id=s.company_id and pr.employee_id=s.employee_id
    where s.company_id=$1 and s.id=$2 for update of s`,[a.companyId,shiftId]);
    if(!r.rowCount)throw new ScheduleError('SHIFT_NOT_FOUND',404);
-   const sh=r.rows[0];await lockEmployees(c,a.companyId,[sh.employee_id]);
+   const sh=r.rows[0];
+   if(!sh.published)throw new ScheduleError('PUBLISH_SHIFT_BEFORE_OVERTIME_APPROVAL',409);
+   await lockEmployees(c,a.companyId,[sh.employee_id]);
    const weekly=await c.query(`with bounds as (
      select date_trunc('week',$3::timestamptz at time zone $4)::date as week_start,
      date_trunc('week',$3::timestamptz at time zone $4) at time zone $4 as from_at,
@@ -100,6 +102,7 @@ export function registerSchedulingRoutes(app:FastifyInstance,db:Pick<Pool,'query
    const shiftHours=Number(weekly.rows[0].shift_hours);
    const overtime=Math.max(0,prior+shiftHours-limit)-Math.max(0,prior-limit);
    if(overtime<=0)throw new ScheduleError('NO_OVERTIME_TO_APPROVE',409);
+   if(!Number.isFinite(rate)||rate<0||rate>1000000)throw new ScheduleError('INVALID_OVERTIME_RATE',400);
    const approval=await c.query(`insert into shift_overtime_approvals(company_id,shift_id,employee_id,week_start,overtime_hours,pay_method,approved_hourly_rate,currency,approved_by)
    values($1,$2,$3,$4,$5,$6,$7,$8,$9)
    on conflict(shift_id,week_start) do update set overtime_hours=excluded.overtime_hours,pay_method=excluded.pay_method,approved_hourly_rate=excluded.approved_hourly_rate,currency=excluded.currency,approved_by=excluded.approved_by,approved_at=now()
