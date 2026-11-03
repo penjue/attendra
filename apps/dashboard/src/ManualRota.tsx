@@ -4,7 +4,7 @@ type Branch={id:string;name:string};
 type Template={id:string;branchId:string;periodType:'WEEKLY'|'MONTHLY';anchorStartDate:string;status:string;shiftCount:number};
 type RotaShift={employeeId:string;dayOffset:number;startTime:string;endTime:string;breakMinutes:number;endDayOffset:number};
 type Recurrence={id:string;templateId:string;cadence:string;status:string;endMode:string;endDate:string|null;nextPeriodStart:string;occurrenceCount:number};
-export function ManualRota({api,token,employees,branches}:{api:string;token:string;employees:Employee[];branches:Branch[]}){
+export function ManualRota({api,token,employees,branches,onAssignmentsChanged}:{api:string;token:string;employees:Employee[];branches:Branch[];onAssignmentsChanged?:()=>void}){
  const [templates,setTemplates]=useState<Template[]>([]),[recurrences,setRecurrences]=useState<Recurrence[]>([]);
  const [message,setMessage]=useState(''),[busy,setBusy]=useState(false);
  const [period,setPeriod]=useState<'WEEKLY'|'MONTHLY'>('WEEKLY'),[branch,setBranch]=useState(''),[anchor,setAnchor]=useState(''),[employee,setEmployee]=useState('');
@@ -41,7 +41,7 @@ export function ManualRota({api,token,employees,branches}:{api:string;token:stri
  const call=async(path:string,method='GET',body?:unknown)=>{const r=await fetch(`${api}/v1/admin/${path}`,{method,headers:{Authorization:`Bearer ${token}`,...(body===undefined?{}:{'Content-Type':'application/json'})},body:body===undefined?undefined:JSON.stringify(body)});const d=await r.json();if(!r.ok)throw Error(d.skipped?.length?`${d.error}: ${d.skipped.join(', ')}. Resolve conflicts and retry.`:(d.error||'Request failed'));return d};
  const refresh=async()=>{const [t,r]=await Promise.all([call('rota-templates'),call('rota-recurrences')]);setTemplates(t.templates);setRecurrences(r.recurrences)};
  useEffect(()=>{void refresh().catch(e=>setMessage(e.message))},[api,token]);
- const execute=async(fn:()=>Promise<void>)=>{setBusy(true);setMessage('');try{await fn();await refresh()}catch(e){setMessage((e as Error).message)}finally{setBusy(false)}};
+ const execute=async(fn:()=>Promise<void>)=>{setBusy(true);setMessage('');try{await fn();await refresh();onAssignmentsChanged?.()}catch(e){setMessage((e as Error).message)}finally{setBusy(false)}};
  const addShift=()=>{if(!employee){setMessage('Select an employee first.');return}
   if(!Number.isInteger(dayOffset)||dayOffset<0||dayOffset>(period==='WEEKLY'?6:30)){setMessage('Invalid day offset.');return}
   const shift={employeeId:employee,dayOffset,startTime:start,endTime:end,breakMinutes:0,endDayOffset:end<=start?1:0};
