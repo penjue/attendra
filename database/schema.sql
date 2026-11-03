@@ -470,8 +470,14 @@ BEGIN
     OR OLD.ends_at IS DISTINCT FROM NEW.ends_at
     OR OLD.break_minutes IS DISTINCT FROM NEW.break_minutes
  THEN
+   -- Any changed shift can change which other shifts cross the weekly threshold.
+   -- Conservatively require reapproval of affected employees' overtime.
    DELETE FROM shift_overtime_approvals
-   WHERE shift_id=NEW.id;
+   WHERE company_id=OLD.company_id AND employee_id=OLD.employee_id;
+   IF NEW.company_id IS DISTINCT FROM OLD.company_id OR NEW.employee_id IS DISTINCT FROM OLD.employee_id THEN
+     DELETE FROM shift_overtime_approvals
+     WHERE company_id=NEW.company_id AND employee_id=NEW.employee_id;
+   END IF;
  END IF;
  RETURN NEW;
 END;
