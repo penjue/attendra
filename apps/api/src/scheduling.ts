@@ -60,8 +60,15 @@ export function registerSchedulingRoutes(app:FastifyInstance,db:Pick<Pool,'query
  from week_segments group by employee_id,week_start,weekly_limit
 ) select employee_id as "employeeId",week_start as "weekStart",
  round(assigned_hours,2)::float as "assignedHours",weekly_limit::float as "weeklyLimit",
- round(greatest(assigned_hours-weekly_limit,0),2)::float as "unapprovedPotentialOvertimeHours"
- from weekly where assigned_hours>weekly_limit order by week_start desc,employee_id`,[a.companyId]);
+ round(greatest(assigned_hours-weekly_limit,0),2)::float as "potentialOvertimeHours",
+ round(greatest(greatest(assigned_hours-weekly_limit,0)-coalesce(approved.approved_hours,0),0),2)::float as "unapprovedPotentialOvertimeHours",
+ round(coalesce(approved.approved_hours,0),2)::float as "approvedOvertimeHours"
+ from weekly left join lateral (
+   select sum(oa.overtime_hours)::numeric as approved_hours
+   from shift_overtime_approvals oa join shifts approved_shift on approved_shift.id=oa.shift_id
+   where oa.company_id=$1 and oa.employee_id=weekly.employee_id and oa.week_start=weekly.week_start and approved_shift.published=true
+ ) approved on true
+ where assigned_hours>weekly_limit order by week_start desc,employee_id`,[a.companyId]);
  return{ok:true,overages:r.rows,notice:'Potential overtime only. No manager approval or payroll entitlement is implied.'}});
  route('GET','/v1/admin/scheduling/overtime-approvals',async(_req,a)=>{const r=await db.query(`select oa.id,oa.shift_id as "shiftId",oa.employee_id as "employeeId",oa.week_start as "weekStart",oa.overtime_hours::float as "overtimeHours",oa.pay_method as "payMethod",oa.approved_hourly_rate::float as "approvedHourlyRate",oa.currency,oa.approved_at as "approvedAt",oa.approved_by as "approvedBy"
  from shift_overtime_approvals oa join shifts s on s.id=oa.shift_id and s.company_id=oa.company_id
