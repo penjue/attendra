@@ -86,16 +86,19 @@ export function registerSchedulingRoutes(app:FastifyInstance,db:Pick<Pool,'query
      least(x.ends_at,b.to_at) as segment_end
      from bounds b join shifts x on x.company_id=$1 and x.employee_id=$2
        and x.starts_at<b.to_at and x.ends_at>b.from_at
+   ), hours as (
+     select id,starts_at,week_start,
+     greatest(0,extract(epoch from(segment_end-segment_start))/3600*
+       greatest(0,1-break_minutes/nullif(extract(epoch from(ends_at-starts_at))/60,0))) as hours
+     from segments
    ) select week_start,
-   coalesce(sum(extract(epoch from(segment_end-segment_start))/3600*
-     greatest(0,1-break_minutes/nullif(extract(epoch from(ends_at-starts_at))/60,0))),0)::float as total_hours,
-   coalesce(sum(case when id=$5 then extract(epoch from(segment_end-segment_start))/3600*
-     greatest(0,1-break_minutes/nullif(extract(epoch from(ends_at-starts_at))/60,0)) else 0 end),0)::float as shift_hours
-   from segments group by week_start`,[a.companyId,sh.employee_id,sh.starts_at,sh.timezone,shiftId]);
+   coalesce(sum(hours) filter(where starts_at<$6::timestamptz or (starts_at=$6::timestamptz and id<$5::uuid)),0)::float as prior_hours,
+   coalesce(sum(hours) filter(where id=$5::uuid),0)::float as shift_hours
+   from hours group by week_start`,[a.companyId,sh.employee_id,sh.starts_at,sh.timezone,shiftId,sh.starts_at]);
    if(!weekly.rowCount)throw new ScheduleError('SHIFT_WEEK_NOT_FOUND',409);
-   const total=Number(weekly.rows[0].total_hours),limit=Number(sh.weekly_limit);
+   const prior=Number(weekly.rows[0].prior_hours),limit=Number(sh.weekly_limit);
    const shiftHours=Number(weekly.rows[0].shift_hours);
-   const overtime=Math.max(0,Math.min(shiftHours,total-limit));
+   const overtime=Math.max(0,prior+shiftHours-limit)-Math.max(0,prior-limit);
    if(overtime<=0)throw new ScheduleError('NO_OVERTIME_TO_APPROVE',409);
    const approval=await c.query(`insert into shift_overtime_approvals(company_id,shift_id,employee_id,week_start,overtime_hours,pay_method,approved_hourly_rate,currency,approved_by)
    values($1,$2,$3,$4,$5,$6,$7,$8,$9)
