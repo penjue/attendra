@@ -63,6 +63,9 @@ export function registerSchedulingRoutes(app:FastifyInstance,db:Pick<Pool,'query
  round(greatest(assigned_hours-weekly_limit,0),2)::float as "unapprovedPotentialOvertimeHours"
  from weekly where assigned_hours>weekly_limit order by week_start desc,employee_id`,[a.companyId]);
  return{ok:true,overages:r.rows,notice:'Potential overtime only. No manager approval or payroll entitlement is implied.'}});
+ route('GET','/v1/admin/scheduling/overtime-approvals',async(_req,a)=>{const r=await db.query(`select oa.id,oa.shift_id as "shiftId",oa.employee_id as "employeeId",oa.week_start as "weekStart",oa.overtime_hours::float as "overtimeHours",oa.pay_method as "payMethod",oa.approved_hourly_rate::float as "approvedHourlyRate",oa.currency,oa.approved_at as "approvedAt",oa.approved_by as "approvedBy"
+ from shift_overtime_approvals oa join shifts s on s.id=oa.shift_id and s.company_id=oa.company_id
+ where oa.company_id=$1 and s.published=true order by oa.approved_at desc limit 500`,[a.companyId]);return{ok:true,approvals:r.rows}});
  route('POST','/v1/admin/scheduling/shifts/:shiftId/overtime-approval',async(req,a)=>{
   const shiftId=id(req,'shiftId');
   const p=z.object({payMethod:z.enum(['NORMAL_RATE','MULTIPLIER','CUSTOM_HOURLY']),baseHourlyRate:z.number().finite().min(0).max(1000000).optional(),multiplier:z.number().finite().positive().max(10).optional(),customHourlyRate:z.number().finite().min(0).max(1000000).optional()}).parse(req.body);
