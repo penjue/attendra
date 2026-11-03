@@ -39,17 +39,28 @@ export function registerSchedulingRoutes(app:FastifyInstance,db:Pick<Pool,'query
   const employee=id(req,'employeeId'),p=z.object({jobRole:z.string().trim().max(100),maxWeeklyHours:z.number().min(1).max(168),allowedBranchIds:z.array(z.uuid()).max(100).default([])}).parse(req.body);
   return tx(async c=>{await lockEmployees(c,a.companyId,[employee]);if(p.allowedBranchIds.length){const branches=await c.query('select id from branches where company_id=$1 and active=true and id=ANY($2::uuid[])',[a.companyId,[...new Set(p.allowedBranchIds)]]);if(branches.rowCount!==new Set(p.allowedBranchIds).size)throw new ScheduleError('BRANCH_NOT_FOUND',404)}await c.query(`insert into employee_schedule_profiles(employee_id,company_id,job_role,max_weekly_hours,allowed_branch_ids) values($1,$2,$3,$4,$5) on conflict(employee_id) do update set job_role=excluded.job_role,max_weekly_hours=excluded.max_weekly_hours,allowed_branch_ids=excluded.allowed_branch_ids`,[employee,a.companyId,p.jobRole,p.maxWeeklyHours,p.allowedBranchIds]);await audit(c,a,'UPDATE_SCHEDULE_PROFILE','EMPLOYEE',employee);return{ok:true}});
  });
- route('GET','/v1/admin/scheduling/weekly-hours-overages',async(_req,a)=>{const r=await db.query(`with weekly as (
- select s.employee_id, date_trunc('week',s.starts_at at time zone co.timezone)::date as week_start,
- sum(extract(epoch from(s.ends_at-s.starts_at))/3600)::numeric as assigned_hours,
- coalesce(p.max_weekly_hours,40)::numeric as weekly_limit
+ route('GET','/v1/admin/scheduling/weekly-hours-overages',async(_req,a)=>{const r=await db.query(`with week_segments as (
+ select s.employee_id,co.timezone,coalesce(p.max_weekly_hours,40)::numeric as weekly_limit,
+ greatest(s.starts_at, w.week_start at time zone co.timezone) as segment_start,
+ least(s.ends_at, (w.week_start+interval '7 days') at time zone co.timezone) as segment_end,
+ w.week_start::date as week_start,
+ s.break_minutes,
+ extract(epoch from(s.ends_at-s.starts_at))/60 as shift_minutes
  from shifts s join companies co on co.id=s.company_id
  left join employee_schedule_profiles p on p.employee_id=s.employee_id and p.company_id=s.company_id
+ cross join lateral generate_series(
+ date_trunc('week',s.starts_at at time zone co.timezone),
+ date_trunc('week',(s.ends_at-interval '1 microsecond') at time zone co.timezone),
+ interval '7 days') as w(week_start)
  where s.company_id=$1
- group by s.employee_id,date_trunc('week',s.starts_at at time zone co.timezone),p.max_weekly_hours
+), weekly as (
+ select employee_id,week_start,weekly_limit,
+ sum(greatest(0,extract(epoch from(segment_end-segment_start))/3600)
+ * case when shift_minutes>0 then greatest(0,1-break_minutes/shift_minutes) else 0 end)::numeric as assigned_hours
+ from week_segments group by employee_id,week_start,weekly_limit
 ) select employee_id as "employeeId",week_start as "weekStart",
- assigned_hours::float as "assignedHours",weekly_limit::float as "weeklyLimit",
- greatest(assigned_hours-weekly_limit,0)::float as "unapprovedPotentialOvertimeHours"
+ round(assigned_hours,2)::float as "assignedHours",weekly_limit::float as "weeklyLimit",
+ round(greatest(assigned_hours-weekly_limit,0),2)::float as "unapprovedPotentialOvertimeHours"
  from weekly where assigned_hours>weekly_limit order by week_start desc,employee_id`,[a.companyId]);
  return{ok:true,overages:r.rows,notice:'Potential overtime only. No manager approval or payroll entitlement is implied.'}});
  route('GET','/v1/admin/scheduling/assigned-hours',async(_req,a)=>{const r=await db.query(`select s.employee_id as "employeeId",s.branch_id as "branchId",count(*)::int as "shiftCount",coalesce(sum(extract(epoch from (s.ends_at-s.starts_at))/3600),0)::float as "grossHours",coalesce(sum(least(greatest(s.break_minutes,0),extract(epoch from (s.ends_at-s.starts_at))/60))/60,0)::float as "breakHours" from shifts s where s.company_id=$1 group by s.employee_id,s.branch_id`,[a.companyId]);return{ok:true,totals:r.rows}});
