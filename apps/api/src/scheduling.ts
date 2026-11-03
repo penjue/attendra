@@ -66,6 +66,18 @@ export function registerSchedulingRoutes(app:FastifyInstance,db:Pick<Pool,'query
  route('GET','/v1/admin/scheduling/overtime-approvals',async(_req,a)=>{const r=await db.query(`select oa.id,oa.shift_id as "shiftId",oa.employee_id as "employeeId",oa.week_start as "weekStart",oa.overtime_hours::float as "overtimeHours",oa.pay_method as "payMethod",oa.approved_hourly_rate::float as "approvedHourlyRate",oa.currency,oa.approved_at as "approvedAt",oa.approved_by as "approvedBy"
  from shift_overtime_approvals oa join shifts s on s.id=oa.shift_id and s.company_id=oa.company_id
  where oa.company_id=$1 and s.published=true order by oa.approved_at desc limit 500`,[a.companyId]);return{ok:true,approvals:r.rows}});
+ route('DELETE','/v1/admin/scheduling/shifts/:shiftId/overtime-approval',async(req,a)=>{
+ const shiftId=id(req,'shiftId');
+ return tx(async c=>{
+  const r=await c.query(`select oa.id from shift_overtime_approvals oa
+   join shifts s on s.id=oa.shift_id and s.company_id=oa.company_id
+   where oa.company_id=$1 and oa.shift_id=$2 for update of oa`,[a.companyId,shiftId]);
+  if(!r.rowCount)throw new ScheduleError('OVERTIME_APPROVAL_NOT_FOUND',404);
+  await c.query('delete from shift_overtime_approvals where company_id=$1 and shift_id=$2',[a.companyId,shiftId]);
+  await audit(c,a,'REVOKE_SHIFT_OVERTIME','SHIFT',shiftId);
+  return{ok:true,revoked:r.rowCount};
+ });
+});
  route('POST','/v1/admin/scheduling/shifts/:shiftId/overtime-approval',async(req,a)=>{
   const shiftId=id(req,'shiftId');
   const p=z.object({payMethod:z.enum(['NORMAL_RATE','MULTIPLIER','CUSTOM_HOURLY']),baseHourlyRate:z.number().finite().min(0).max(1000000).optional(),multiplier:z.number().finite().positive().max(10).optional(),customHourlyRate:z.number().finite().min(0).max(1000000).optional()}).parse(req.body);
