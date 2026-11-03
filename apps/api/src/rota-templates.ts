@@ -109,7 +109,13 @@ export function registerRotaTemplateRoutes(app:FastifyInstance,db:Pick<Pool,'con
   const a=requireAdmin(req,reply);if(!a)return;
   const id=z.uuid().safeParse((req.params as any).recurrenceId),p=z.object({status:z.enum(['ACTIVE','PAUSED','STOPPED'])}).safeParse(req.body);
   if(!id.success||!p.success)return reply.code(400).send({ok:false,error:'INVALID_STATUS'});
-  const r=await db.query(`update rota_recurrences r set status=$3,updated_at=now() from rota_templates t
+  const r=await db.query(`update rota_recurrences r set status=$3,updated_at=now(),
+  next_period_start=case when r.status='STOPPED' and $3='ACTIVE' and r.next_period_start<current_date
+  then (select min((r.next_period_start + (n.i * case when r.cadence='WEEKLY' then interval '7 days' else interval '1 month' end))::date)
+        from generate_series(0,1200) as n(i)
+        where (r.next_period_start + (n.i * case when r.cadence='WEEKLY' then interval '7 days' else interval '1 month' end))::date>=current_date)
+  else r.next_period_start end
+  from rota_templates t
   where r.id=$1 and r.template_id=t.id and t.company_id=$2 and r.deleted_at is null and (r.status<>'STOPPED' or $3='ACTIVE') returning r.id`,[id.data,a.companyId,p.data.status]);
   return r.rowCount?{ok:true,status:p.data.status}:reply.code(404).send({ok:false,error:'RECURRENCE_NOT_FOUND_OR_STOPPED'});
  });
