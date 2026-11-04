@@ -100,6 +100,39 @@ export function registerSchedulingRoutes(app:FastifyInstance,db:Pick<Pool,'query
    return{ok:true,profile:r.rows[0],notice:'Compensation profile saved. No payroll has been calculated or finalised.'};
   });
  });
+ route('GET','/v1/admin/scheduling/payroll-shift-reviews',async(req,a)=>{
+  const p=z.object({month:z.string().regex(/^[0-9]{4}-(0[1-9]|1[0-2])$/)}).parse(req.query);
+  const r=await db.query(`select s.id as "shiftId",s.employee_id as "employeeId",concat(e.first_name,' ',e.last_name) as "employeeName",b.name as "branchName",s.starts_at as "startsAt",s.ends_at as "endsAt",s.published,
+   exists(select 1 from attendance_events ae where ae.shift_id=s.id and ae.employee_id=s.employee_id and ae.action='CHECK_IN') as "hasCheckIn",
+   exists(select 1 from attendance_events ae where ae.shift_id=s.id and ae.employee_id=s.employee_id and ae.action='CHECK_OUT') as "hasCheckOut",
+   pr.decision,pr.note,pr.reviewed_at as "reviewedAt"
+   from shifts s join companies co on co.id=s.company_id join employees e on e.id=s.employee_id
+   join branches b on b.id=s.branch_id left join payroll_shift_reviews pr on pr.company_id=s.company_id and pr.shift_id=s.id
+   where s.company_id=$1 and s.published=true
+   and to_char(s.starts_at at time zone co.timezone,'YYYY-MM')=$2
+   and to_char((s.ends_at-interval '1 microsecond') at time zone co.timezone,'YYYY-MM')=$2
+   and s.ends_at<=now()
+   and (pr.decision is not null or not exists(select 1 from attendance_events ae where ae.shift_id=s.id and ae.employee_id=s.employee_id and ae.action='CHECK_IN')
+    or not exists(select 1 from attendance_events ae where ae.shift_id=s.id and ae.employee_id=s.employee_id and ae.action='CHECK_OUT'))
+   order by s.starts_at desc limit 500`,[a.companyId,p.month]);
+  return{ok:true,month:p.month,reviews:r.rows,notice:'Review decisions are recorded but do not yet change provisional gross payroll. Missing attendance alone does not automatically deduct assigned pay. Cross-month shifts are not included.'};
+ });
+ route('PUT','/v1/admin/scheduling/payroll-shift-reviews/:shiftId',async(req,a)=>{
+  const shiftId=id(req,'shiftId');
+  const p=z.object({decision:z.enum(['WORKED','CANCELLED','REASSIGNMENT_REQUIRED']),note:z.string().trim().max(1000).default('')}).strict().parse(req.body);
+  if(p.decision==='REASSIGNMENT_REQUIRED'&&!p.note)throw new ScheduleError('REASSIGNMENT_NOTE_REQUIRED',400);
+  return tx(async c=>{
+   const r=await c.query(`select s.employee_id from shifts s join companies co on co.id=s.company_id where s.company_id=$1 and s.id=$2 and s.published=true and s.ends_at<=now() for update of s`,[a.companyId,shiftId]);
+   if(!r.rowCount)throw new ScheduleError('COMPLETED_PUBLISHED_SHIFT_NOT_FOUND',404);
+   const locked=await c.query(`select 1 from employee_payroll_snapshots where company_id=$1 and employee_id=$2 and status='FINALISED' limit 1`,[a.companyId,r.rows[0].employee_id]);
+   if(locked.rowCount)throw new ScheduleError('FINALISED_PAYROLL_REVIEW_LOCKED',409);
+   const review=await c.query(`insert into payroll_shift_reviews(company_id,shift_id,employee_id,decision,note,reviewed_by)
+    values($1,$2,$3,$4,$5,$6) on conflict(company_id,shift_id) do update set decision=excluded.decision,note=excluded.note,reviewed_by=excluded.reviewed_by,reviewed_at=now()
+    returning shift_id as "shiftId",decision,note,reviewed_at as "reviewedAt"`,[a.companyId,shiftId,r.rows[0].employee_id,p.decision,p.note,a.adminId||null]);
+   await audit(c,a,'REVIEW_PAYROLL_SHIFT','SHIFT',shiftId);
+   return{ok:true,review:review.rows[0],notice:'Decision recorded for reconciliation; payroll amounts have not been changed.'};
+  });
+ });
  route('GET','/v1/admin/scheduling/payroll-preview',async(req,a)=>{
   const p=z.object({month:z.string().regex(/^[0-9]{4}-(0[1-9]|1[0-2])$/)}).parse(req.query);
   const result=await db.query(`with eligible_shifts as (
