@@ -159,6 +159,25 @@ export function registerSchedulingRoutes(app:FastifyInstance,db:Pick<Pool,'query
   const blockers={...q.rows[0],payrollMonthStillOpen:!company.rows[0]?.closed,missingCompensationProfiles:Number(profiles.rows[0].count),alreadyFinalisedEmployees:Number(finalised.rows[0].count)};
   return{ok:true,month:p.month,ready:false,blockers,notice:'Advisory readiness check only. Final payroll approval is disabled. An open payroll month and unfinished shifts must not be treated as ready; exception reconciliation, cross-month allocation, pay-rate history and other controls remain incomplete.'};
  });
+ route('POST','/v1/admin/scheduling/payroll-approval-preflight',async(req,a)=>{
+  const p=z.object({month:z.string().regex(/^[0-9]{4}-(0[1-9]|1[0-2])$/)}).strict().parse(req.body);
+  const result=await db.query(`select coalesce(bool_or(now() at time zone co.timezone < (($2||'-01')::date+interval '1 month')),false) as "monthOpen",
+   count(s.id) filter(where s.id is not null and (s.published=false or s.ends_at>now()))::int as "unreadyShifts",
+   count(s.id) filter(where s.id is not null and to_char(s.starts_at at time zone co.timezone,'YYYY-MM')<>to_char((s.ends_at-interval '1 microsecond') at time zone co.timezone,'YYYY-MM'))::int as "crossMonthShifts",
+   count(s.id) filter(where s.id is not null and exists(select 1 from payroll_shift_reviews pr where pr.company_id=$1 and pr.shift_id=s.id and pr.decision='REASSIGNMENT_REQUIRED'))::int as "pendingReassignments",
+   count(s.id) filter(where s.id is not null and s.published and s.ends_at<=now()
+    and not exists(select 1 from payroll_shift_reviews pr where pr.company_id=$1 and pr.shift_id=s.id)
+    and (not exists(select 1 from attendance_events ae where ae.shift_id=s.id and ae.employee_id=s.employee_id and ae.action='CHECK_IN')
+     or not exists(select 1 from attendance_events ae where ae.shift_id=s.id and ae.employee_id=s.employee_id and ae.action='CHECK_OUT')))::int as "unreviewedAttendanceExceptions"
+   from companies co left join shifts s on s.company_id=co.id
+    and (to_char(s.starts_at at time zone co.timezone,'YYYY-MM')=$2 or to_char((s.ends_at-interval '1 microsecond') at time zone co.timezone,'YYYY-MM')=$2)
+   where co.id=$1`,[a.companyId,p.month]);
+  const profiles=await db.query(`select count(*)::int as count from employees e where e.company_id=$1 and e.active
+   and not exists(select 1 from employee_compensation_profiles cp where cp.company_id=e.company_id and cp.employee_id=e.id)`,[a.companyId]);
+  const finalised=await db.query(`select count(*)::int as count from employee_payroll_snapshots where company_id=$1 and payroll_month=($2||'-01')::date and status='FINALISED'`,[a.companyId,p.month]);
+  const blockers={...result.rows[0],missingCompensationProfiles:Number(profiles.rows[0].count),alreadyFinalisedEmployees:Number(finalised.rows[0].count)};
+  return{ok:true,month:p.month,approvalAllowed:false,blockers,notice:'Preflight only: no payroll records were written. Final approval remains disabled pending full reconciliation, rate history and payslip controls.'};
+ });
  route('GET','/v1/admin/scheduling/payroll-preview',async(req,a)=>{
   const p=z.object({month:z.string().regex(/^[0-9]{4}-(0[1-9]|1[0-2])$/)}).parse(req.query);
   const result=await db.query(`with eligible_shifts as (
