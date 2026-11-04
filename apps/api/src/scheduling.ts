@@ -70,6 +70,36 @@ export function registerSchedulingRoutes(app:FastifyInstance,db:Pick<Pool,'query
  ) approved on true
  where assigned_hours>weekly_limit order by week_start desc,employee_id`,[a.companyId]);
  return{ok:true,overages:r.rows,notice:'Potential overtime only. No manager approval or payroll entitlement is implied.'}});
+ route('GET','/v1/admin/scheduling/compensation-profiles',async(_req,a)=>{
+  const r=await db.query(`select e.id as "employeeId",e.employee_number as "employeeNumber",concat(e.first_name,' ',e.last_name) as "employeeName",e.hourly_worker as "hourlyWorker",
+   cp.pay_type as "payType",cp.hourly_rate::float as "hourlyRate",cp.monthly_salary::float as "monthlySalary",co.currency,cp.updated_at as "updatedAt"
+   from employees e join companies co on co.id=e.company_id
+   left join employee_compensation_profiles cp on cp.company_id=e.company_id and cp.employee_id=e.id
+   where e.company_id=$1 order by e.first_name,e.last_name`,[a.companyId]);
+  return{ok:true,profiles:r.rows};
+ });
+ route('PUT','/v1/admin/scheduling/compensation-profiles/:employeeId',async(req,a)=>{
+  const employeeId=id(req,'employeeId');
+  const p=z.discriminatedUnion('payType',[
+   z.object({payType:z.literal('HOURLY'),hourlyRate:z.number().finite().min(0).max(1000000)}).strict(),
+   z.object({payType:z.literal('MONTHLY'),monthlySalary:z.number().finite().min(0).max(100000000)}).strict()
+  ]).parse(req.body);
+  return tx(async c=>{
+   const employee=await c.query('select id from employees where company_id=$1 and id=$2 for update',[a.companyId,employeeId]);
+   if(!employee.rowCount)throw new ScheduleError('EMPLOYEE_NOT_FOUND',404);
+   const locked=await c.query(`select 1 from employee_payroll_snapshots where company_id=$1 and employee_id=$2 and status='FINALISED' limit 1`,[a.companyId,employeeId]);
+   if(locked.rowCount)throw new ScheduleError('COMPENSATION_CHANGE_REQUIRES_EFFECTIVE_DATE',409);
+   const rate=p.payType==='HOURLY'?p.hourlyRate:null,salary=p.payType==='MONTHLY'?p.monthlySalary:null;
+   const r=await c.query(`insert into employee_compensation_profiles(company_id,employee_id,pay_type,hourly_rate,monthly_salary,currency)
+    select $1,$2,$3,$4,$5,co.currency from companies co where co.id=$1
+    on conflict(company_id,employee_id) do update set pay_type=excluded.pay_type,hourly_rate=excluded.hourly_rate,monthly_salary=excluded.monthly_salary,currency=excluded.currency,updated_at=now()
+    returning employee_id as "employeeId",pay_type as "payType",hourly_rate::float as "hourlyRate",monthly_salary::float as "monthlySalary",currency`,
+    [a.companyId,employeeId,p.payType,rate,salary]);
+   await c.query('update employees set hourly_worker=$3 where company_id=$1 and id=$2',[a.companyId,employeeId,p.payType==='HOURLY']);
+   await audit(c,a,'UPDATE_COMPENSATION_PROFILE','EMPLOYEE',employeeId);
+   return{ok:true,profile:r.rows[0],notice:'Compensation profile saved. No payroll has been calculated or finalised.'};
+  });
+ });
  route('GET','/v1/admin/scheduling/payroll-overtime-preview',async(req,a)=>{
  const p=z.object({month:z.string().regex(/^[0-9]{4}-(0[1-9]|1[0-2])$/)}).parse(req.query);
  const r=await db.query(`select oa.employee_id as "employeeId",
