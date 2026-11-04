@@ -504,3 +504,57 @@ DROP TRIGGER IF EXISTS trg_invalidate_overtime_weekly_limit ON employee_schedule
 CREATE TRIGGER trg_invalidate_overtime_weekly_limit
 AFTER UPDATE OF max_weekly_hours ON employee_schedule_profiles
 FOR EACH ROW EXECUTE FUNCTION invalidate_overtime_on_weekly_limit_change();
+
+-- Payroll compensation is company-scoped and independent of branch assignment.
+-- Rates are stored as decimals; payroll must calculate and snapshot before finalisation.
+CREATE TABLE IF NOT EXISTS employee_compensation_profiles (
+ company_id uuid NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+ employee_id uuid NOT NULL REFERENCES employees(id) ON DELETE CASCADE,
+ pay_type text NOT NULL CHECK (pay_type IN ('HOURLY','MONTHLY')),
+ hourly_rate numeric(14,4) CHECK (hourly_rate>=0),
+ monthly_salary numeric(14,2) CHECK (monthly_salary>=0),
+ currency char(3) NOT NULL,
+ updated_at timestamptz NOT NULL DEFAULT now(),
+ PRIMARY KEY (company_id,employee_id),
+ CHECK ((pay_type='HOURLY' AND hourly_rate IS NOT NULL AND monthly_salary IS NULL)
+     OR (pay_type='MONTHLY' AND monthly_salary IS NOT NULL AND hourly_rate IS NULL))
+);
+
+-- One immutable snapshot per employee and payroll month after finalisation.
+-- Drafts may be recalculated; finalised records must not be silently overwritten.
+CREATE TABLE IF NOT EXISTS employee_payroll_snapshots (
+ id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+ company_id uuid NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+ employee_id uuid NOT NULL REFERENCES employees(id),
+ payroll_month date NOT NULL CHECK (extract(day from payroll_month)=1),
+ currency char(3) NOT NULL,
+ pay_type text NOT NULL CHECK (pay_type IN ('HOURLY','MONTHLY')),
+ regular_hours numeric(12,2) NOT NULL CHECK (regular_hours>=0),
+ regular_pay numeric(14,2) NOT NULL CHECK (regular_pay>=0),
+ overtime_hours numeric(12,2) NOT NULL CHECK (overtime_hours>=0),
+ overtime_pay numeric(14,2) NOT NULL CHECK (overtime_pay>=0),
+ gross_pay numeric(14,2) GENERATED ALWAYS AS (regular_pay+overtime_pay) STORED,
+ status text NOT NULL DEFAULT 'DRAFT' CHECK (status IN ('DRAFT','FINALISED')),
+ calculated_at timestamptz NOT NULL DEFAULT now(),
+ finalised_at timestamptz,
+ finalised_by uuid REFERENCES company_admins(id) ON DELETE SET NULL,
+ UNIQUE (company_id,employee_id,payroll_month),
+ CHECK ((status='DRAFT' AND finalised_at IS NULL) OR (status='FINALISED' AND finalised_at IS NOT NULL))
+);
+CREATE INDEX IF NOT EXISTS idx_employee_payroll_month ON employee_payroll_snapshots(company_id,payroll_month);
+CREATE OR REPLACE FUNCTION protect_finalised_payroll_snapshot() RETURNS trigger
+LANGUAGE plpgsql AS $$
+BEGIN
+ IF TG_OP='DELETE' AND OLD.status='FINALISED' THEN
+   RAISE EXCEPTION 'FINALISED_PAYROLL_IMMUTABLE';
+ END IF;
+ IF TG_OP='UPDATE' AND OLD.status='FINALISED' THEN
+   RAISE EXCEPTION 'FINALISED_PAYROLL_IMMUTABLE';
+ END IF;
+ RETURN CASE WHEN TG_OP='DELETE' THEN OLD ELSE NEW END;
+END;
+$$;
+DROP TRIGGER IF EXISTS trg_protect_finalised_payroll_snapshot ON employee_payroll_snapshots;
+CREATE TRIGGER trg_protect_finalised_payroll_snapshot
+BEFORE UPDATE OR DELETE ON employee_payroll_snapshots
+FOR EACH ROW EXECUTE FUNCTION protect_finalised_payroll_snapshot();
