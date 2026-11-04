@@ -558,3 +558,17 @@ DROP TRIGGER IF EXISTS trg_protect_finalised_payroll_snapshot ON employee_payrol
 CREATE TRIGGER trg_protect_finalised_payroll_snapshot
 BEFORE UPDATE OR DELETE ON employee_payroll_snapshots
 FOR EACH ROW EXECUTE FUNCTION protect_finalised_payroll_snapshot();
+
+-- Explicit manager decisions for attendance-related payroll exceptions.
+-- Decisions are recorded independently; payroll calculations must reconcile them before finalisation.
+CREATE TABLE IF NOT EXISTS payroll_shift_reviews (
+ company_id uuid NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+ shift_id uuid NOT NULL REFERENCES shifts(id) ON DELETE CASCADE,
+ employee_id uuid NOT NULL REFERENCES employees(id),
+ decision text NOT NULL CHECK (decision IN ('WORKED','CANCELLED','REASSIGNMENT_REQUIRED')),
+ note text NOT NULL DEFAULT '',
+ reviewed_by uuid REFERENCES company_admins(id) ON DELETE SET NULL,
+ reviewed_at timestamptz NOT NULL DEFAULT now(),
+ PRIMARY KEY(company_id,shift_id)
+);
+CREATE INDEX IF NOT EXISTS idx_payroll_shift_reviews_employee ON payroll_shift_reviews(company_id,employee_id);
