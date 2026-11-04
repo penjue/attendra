@@ -100,6 +100,46 @@ export function registerSchedulingRoutes(app:FastifyInstance,db:Pick<Pool,'query
    return{ok:true,profile:r.rows[0],notice:'Compensation profile saved. No payroll has been calculated or finalised.'};
   });
  });
+ route('GET','/v1/admin/scheduling/payroll-preview',async(req,a)=>{
+  const p=z.object({month:z.string().regex(/^[0-9]{4}-(0[1-9]|1[0-2])$/)}).parse(req.query);
+  const result=await db.query(`with eligible_shifts as (
+   select s.id,s.employee_id,s.break_minutes,s.starts_at,s.ends_at,
+    greatest(0,extract(epoch from(s.ends_at-s.starts_at))/3600)::numeric as duration_hours,
+    cp.pay_type,cp.hourly_rate,cp.monthly_salary,cp.currency
+   from shifts s join companies co on co.id=s.company_id
+   join employee_compensation_profiles cp on cp.company_id=s.company_id and cp.employee_id=s.employee_id
+   where s.company_id=$1 and s.published=true
+    and to_char(s.starts_at at time zone co.timezone,'YYYY-MM')=$2
+    and to_char((s.ends_at-interval '1 microsecond') at time zone co.timezone,'YYYY-MM')=$2
+  ), approved as (
+   select oa.shift_id,sum(oa.overtime_hours) as hours,sum(oa.overtime_hours*oa.approved_hourly_rate) as pay
+   from shift_overtime_approvals oa join eligible_shifts s on s.id=oa.shift_id
+   join companies co on co.id=oa.company_id
+   where oa.company_id=$1 and oa.currency=s.currency
+    and date_trunc('week',s.starts_at at time zone co.timezone)::date=oa.week_start
+    and date_trunc('week',(s.ends_at-interval '1 microsecond') at time zone co.timezone)::date=oa.week_start
+   group by oa.shift_id
+  ), totals as (
+   select s.employee_id,
+    sum(case when s.pay_type='HOURLY' then greatest(0,s.duration_hours-s.break_minutes::numeric/60-coalesce(ap.hours,0)) else 0 end) as regular_hours,
+    sum(case when s.pay_type='HOURLY' then greatest(0,s.duration_hours-s.break_minutes::numeric/60-coalesce(ap.hours,0))*s.hourly_rate else 0 end) as hourly_pay,
+    sum(coalesce(ap.hours,0)) as overtime_hours,sum(coalesce(ap.pay,0)) as overtime_pay,
+    count(*)::int as shift_count
+   from eligible_shifts s left join approved ap on ap.shift_id=s.id group by s.employee_id
+  ) select e.id as "employeeId",concat(e.first_name,' ',e.last_name) as "employeeName",cp.pay_type as "payType",cp.currency,
+   round(coalesce(t.regular_hours,0),2)::float as "regularHours",
+   round(case when cp.pay_type='MONTHLY' then cp.monthly_salary else coalesce(t.hourly_pay,0) end,2)::float as "regularPay",
+   round(coalesce(t.overtime_hours,0),2)::float as "overtimeHours",round(coalesce(t.overtime_pay,0),2)::float as "overtimePay",
+   round((case when cp.pay_type='MONTHLY' then cp.monthly_salary else coalesce(t.hourly_pay,0) end)+coalesce(t.overtime_pay,0),2)::float as "grossPay",
+   coalesce(t.shift_count,0)::int as "eligibleShifts"
+   from employee_compensation_profiles cp join employees e on e.id=cp.employee_id and e.company_id=cp.company_id
+   left join totals t on t.employee_id=cp.employee_id where cp.company_id=$1
+   order by "employeeName"`,[a.companyId,p.month]);
+  const excluded=await db.query(`select count(*)::int as count from shifts s join companies co on co.id=s.company_id
+   where s.company_id=$1 and (to_char(s.starts_at at time zone co.timezone,'YYYY-MM')=$2 or to_char((s.ends_at-interval '1 microsecond') at time zone co.timezone,'YYYY-MM')=$2)
+   and (s.published=false or to_char(s.starts_at at time zone co.timezone,'YYYY-MM')<>$2 or to_char((s.ends_at-interval '1 microsecond') at time zone co.timezone,'YYYY-MM')<>$2)`,[a.companyId,p.month]);
+  return{ok:true,month:p.month,employees:result.rows,excludedShifts:Number(excluded.rows[0].count),notice:'Read-only provisional gross pay, not a payslip. Hourly pay uses published scheduled hours less unpaid breaks and eligible approved overtime hours; monthly salaries are fixed. Only shifts wholly within the company-local month count. Cross-month and unpublished shifts are excluded. Attendance exceptions, missed shifts, unapproved overtime, taxes, deductions and historical pay-rate changes are NOT reconciled. Manager review is required before finalisation.'};
+ });
  route('GET','/v1/admin/scheduling/payroll-overtime-preview',async(req,a)=>{
  const p=z.object({month:z.string().regex(/^[0-9]{4}-(0[1-9]|1[0-2])$/)}).parse(req.query);
  const r=await db.query(`select oa.employee_id as "employeeId",
