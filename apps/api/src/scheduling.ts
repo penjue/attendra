@@ -144,6 +144,7 @@ export function registerSchedulingRoutes(app:FastifyInstance,db:Pick<Pool,'query
    where s.company_id=$1 and s.published=true
     and to_char(s.starts_at at time zone co.timezone,'YYYY-MM')=$2
     and to_char((s.ends_at-interval '1 microsecond') at time zone co.timezone,'YYYY-MM')=$2
+    and not exists(select 1 from payroll_shift_reviews pr where pr.company_id=s.company_id and pr.shift_id=s.id and pr.decision='CANCELLED')
   ), approved as (
    select oa.shift_id,sum(oa.overtime_hours) as hours,sum(oa.overtime_hours*oa.approved_hourly_rate) as pay
    from shift_overtime_approvals oa join eligible_shifts s on s.id=oa.shift_id
@@ -171,7 +172,13 @@ export function registerSchedulingRoutes(app:FastifyInstance,db:Pick<Pool,'query
   const excluded=await db.query(`select count(*)::int as count from shifts s join companies co on co.id=s.company_id
    where s.company_id=$1 and (to_char(s.starts_at at time zone co.timezone,'YYYY-MM')=$2 or to_char((s.ends_at-interval '1 microsecond') at time zone co.timezone,'YYYY-MM')=$2)
    and (s.published=false or to_char(s.starts_at at time zone co.timezone,'YYYY-MM')<>$2 or to_char((s.ends_at-interval '1 microsecond') at time zone co.timezone,'YYYY-MM')<>$2)`,[a.companyId,p.month]);
-  return{ok:true,month:p.month,employees:result.rows,excludedShifts:Number(excluded.rows[0].count),notice:'Read-only provisional gross pay, not a payslip. Hourly pay uses published scheduled hours less unpaid breaks and eligible approved overtime hours; monthly salaries are fixed. Only shifts wholly within the company-local month count. Cross-month and unpublished shifts are excluded. Attendance exceptions, missed shifts, unapproved overtime, taxes, deductions and historical pay-rate changes are NOT reconciled. Manager review is required before finalisation.'};
+  const reviews=await db.query(`select count(*) filter(where pr.decision='CANCELLED')::int as cancelled,
+   count(*) filter(where pr.decision='REASSIGNMENT_REQUIRED')::int as pending
+   from payroll_shift_reviews pr join shifts s on s.id=pr.shift_id and s.company_id=pr.company_id
+   join companies co on co.id=s.company_id
+   where pr.company_id=$1 and to_char(s.starts_at at time zone co.timezone,'YYYY-MM')=$2
+   and to_char((s.ends_at-interval '1 microsecond') at time zone co.timezone,'YYYY-MM')=$2`,[a.companyId,p.month]);
+  return{ok:true,month:p.month,employees:result.rows,excludedShifts:Number(excluded.rows[0].count),cancelledShifts:Number(reviews.rows[0].cancelled),pendingReassignments:Number(reviews.rows[0].pending),notice:'Read-only provisional gross pay, not a payslip. Hourly pay uses published scheduled hours less unpaid breaks and eligible approved overtime hours; monthly salaries are fixed. Only shifts wholly within the company-local month count. Cross-month and unpublished shifts are excluded. Manager-cancelled shifts are excluded from scheduled hourly pay and approved overtime; monthly base salaries remain fixed. Missing attendance alone does not reduce scheduled pay. Reassignment requests, unapproved overtime, taxes, deductions and historical pay-rate changes are NOT reconciled. Manager review is required before finalisation.'};
  });
  route('GET','/v1/admin/scheduling/payroll-overtime-preview',async(req,a)=>{
  const p=z.object({month:z.string().regex(/^[0-9]{4}-(0[1-9]|1[0-2])$/)}).parse(req.query);
