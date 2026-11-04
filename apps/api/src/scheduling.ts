@@ -144,6 +144,7 @@ export function registerSchedulingRoutes(app:FastifyInstance,db:Pick<Pool,'query
       or to_char((s.ends_at-interval '1 microsecond') at time zone co.timezone,'YYYY-MM')=$2)
    ) select
     count(*) filter(where not published)::int as "unpublishedShifts",
+    count(*) filter(where published and ends_at>now())::int as "unfinishedShifts",
     count(*) filter(where start_month<>end_month)::int as "crossMonthShifts",
     count(*) filter(where published and ends_at<=now() and start_month=end_month
       and not exists(select 1 from payroll_shift_reviews pr where pr.company_id=$1 and pr.shift_id=relevant.id)
@@ -154,8 +155,9 @@ export function registerSchedulingRoutes(app:FastifyInstance,db:Pick<Pool,'query
   const profiles=await db.query(`select count(*)::int as count from employees e where e.company_id=$1 and e.active=true
     and not exists(select 1 from employee_compensation_profiles cp where cp.company_id=e.company_id and cp.employee_id=e.id)`,[a.companyId]);
   const finalised=await db.query(`select count(*)::int as count from employee_payroll_snapshots where company_id=$1 and payroll_month=($2||'-01')::date and status='FINALISED'`,[a.companyId,p.month]);
-  const blockers={...q.rows[0],missingCompensationProfiles:Number(profiles.rows[0].count),alreadyFinalisedEmployees:Number(finalised.rows[0].count)};
-  return{ok:true,month:p.month,ready:false,blockers,notice:'Advisory readiness check only. Final payroll approval is disabled until exception reconciliation, cross-month allocation, pay-rate history and other controls are completed and tested.'};
+  const company=await db.query(`select (date_trunc('month',now() at time zone timezone) > ($2||'-01')::date) as closed from companies where id=$1`,[a.companyId,p.month]);
+  const blockers={...q.rows[0],payrollMonthStillOpen:!company.rows[0]?.closed,missingCompensationProfiles:Number(profiles.rows[0].count),alreadyFinalisedEmployees:Number(finalised.rows[0].count)};
+  return{ok:true,month:p.month,ready:false,blockers,notice:'Advisory readiness check only. Final payroll approval is disabled. An open payroll month and unfinished shifts must not be treated as ready; exception reconciliation, cross-month allocation, pay-rate history and other controls remain incomplete.'};
  });
  route('GET','/v1/admin/scheduling/payroll-preview',async(req,a)=>{
   const p=z.object({month:z.string().regex(/^[0-9]{4}-(0[1-9]|1[0-2])$/)}).parse(req.query);
