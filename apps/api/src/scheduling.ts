@@ -70,6 +70,38 @@ export function registerSchedulingRoutes(app:FastifyInstance,db:Pick<Pool,'query
  ) approved on true
  where assigned_hours>weekly_limit order by week_start desc,employee_id`,[a.companyId]);
  return{ok:true,overages:r.rows,notice:'Potential overtime only. No manager approval or payroll entitlement is implied.'}});
+ route('GET','/v1/admin/scheduling/payroll-overtime-preview',async(req,a)=>{
+ const p=z.object({month:z.string().regex(/^\\d{4}-(0[1-9]|1[0-2])$/)}).parse(req.query);
+ const r=await db.query(`select oa.employee_id as "employeeId",
+ concat(e.first_name,' ',e.last_name) as "employeeName",
+ oa.currency,
+ round(sum(oa.overtime_hours),2)::float as "approvedHours",
+ round(sum(oa.overtime_hours*oa.approved_hourly_rate),2)::float as "overtimePay",
+ count(*)::int as "approvalCount"
+ from shift_overtime_approvals oa
+ join shifts s on s.id=oa.shift_id and s.company_id=oa.company_id and s.published=true
+ join employees e on e.id=oa.employee_id
+ join companies co on co.id=oa.company_id
+ where oa.company_id=$1 and to_char(oa.week_start,'YYYY-MM')=$2
+ and date_trunc('week',s.starts_at at time zone co.timezone)::date=oa.week_start
+ and date_trunc('week',(s.ends_at-interval '1 microsecond') at time zone co.timezone)::date=oa.week_start
+ and to_char(s.starts_at at time zone co.timezone,'YYYY-MM')=$2
+ and to_char((s.ends_at-interval '1 microsecond') at time zone co.timezone,'YYYY-MM')=$2
+ group by oa.employee_id,e.first_name,e.last_name,oa.currency
+ order by "employeeName"`,[a.companyId,p.month]);
+ const exclusions=await db.query(`select count(*)::int as count from shift_overtime_approvals oa
+ join shifts s on s.id=oa.shift_id and s.company_id=oa.company_id
+ join companies co on co.id=oa.company_id
+ where oa.company_id=$1 and (to_char(oa.week_start,'YYYY-MM')=$2
+ or to_char(s.starts_at at time zone co.timezone,'YYYY-MM')=$2
+ or to_char((s.ends_at-interval '1 microsecond') at time zone co.timezone,'YYYY-MM')=$2)
+ and (s.published=false
+ or date_trunc('week',s.starts_at at time zone co.timezone)::date<>oa.week_start
+ or date_trunc('week',(s.ends_at-interval '1 microsecond') at time zone co.timezone)::date<>oa.week_start
+ or to_char(s.starts_at at time zone co.timezone,'YYYY-MM')<>$2
+ or to_char((s.ends_at-interval '1 microsecond') at time zone co.timezone,'YYYY-MM')<>$2)`,[a.companyId,p.month]);
+ return{ok:true,month:p.month,employees:r.rows,excludedApprovals:Number(exclusions.rows[0].count),notice:'Read-only preview of approved overtime for shifts entirely within the selected local month and approval week. Cross-week, cross-month, and unpublished shifts are excluded for manual review. No payslips or payroll entries are created.'};
+});
  route('GET','/v1/admin/scheduling/overtime-approvals',async(_req,a)=>{const r=await db.query(`select oa.id,oa.shift_id as "shiftId",oa.employee_id as "employeeId",oa.week_start as "weekStart",oa.overtime_hours::float as "overtimeHours",oa.pay_method as "payMethod",oa.approved_hourly_rate::float as "approvedHourlyRate",oa.currency,oa.approved_at as "approvedAt",oa.approved_by as "approvedBy"
  from shift_overtime_approvals oa join shifts s on s.id=oa.shift_id and s.company_id=oa.company_id
  where oa.company_id=$1 and s.published=true order by oa.approved_at desc limit 500`,[a.companyId]);return{ok:true,approvals:r.rows}});
