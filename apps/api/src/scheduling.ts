@@ -71,7 +71,7 @@ export function registerSchedulingRoutes(app:FastifyInstance,db:Pick<Pool,'query
  where assigned_hours>weekly_limit order by week_start desc,employee_id`,[a.companyId]);
  return{ok:true,overages:r.rows,notice:'Potential overtime only. No manager approval or payroll entitlement is implied.'}});
  route('GET','/v1/admin/scheduling/payroll-overtime-preview',async(req,a)=>{
- const p=z.object({month:z.string().regex(/^\\d{4}-(0[1-9]|1[0-2])$/)}).parse(req.query);
+ const p=z.object({month:z.string().regex(/^[0-9]{4}-(0[1-9]|1[0-2])$/)}).parse(req.query);
  const r=await db.query(`select oa.employee_id as "employeeId",
  concat(e.first_name,' ',e.last_name) as "employeeName",
  oa.currency,
@@ -82,7 +82,7 @@ export function registerSchedulingRoutes(app:FastifyInstance,db:Pick<Pool,'query
  join shifts s on s.id=oa.shift_id and s.company_id=oa.company_id and s.published=true
  join employees e on e.id=oa.employee_id
  join companies co on co.id=oa.company_id
- where oa.company_id=$1 and to_char(oa.week_start,'YYYY-MM')=$2
+ where oa.company_id=$1
  and date_trunc('week',s.starts_at at time zone co.timezone)::date=oa.week_start
  and date_trunc('week',(s.ends_at-interval '1 microsecond') at time zone co.timezone)::date=oa.week_start
  and to_char(s.starts_at at time zone co.timezone,'YYYY-MM')=$2
@@ -92,8 +92,7 @@ export function registerSchedulingRoutes(app:FastifyInstance,db:Pick<Pool,'query
  const exclusions=await db.query(`select count(*)::int as count from shift_overtime_approvals oa
  join shifts s on s.id=oa.shift_id and s.company_id=oa.company_id
  join companies co on co.id=oa.company_id
- where oa.company_id=$1 and (to_char(oa.week_start,'YYYY-MM')=$2
- or to_char(s.starts_at at time zone co.timezone,'YYYY-MM')=$2
+ where oa.company_id=$1 and (to_char(s.starts_at at time zone co.timezone,'YYYY-MM')=$2
  or to_char((s.ends_at-interval '1 microsecond') at time zone co.timezone,'YYYY-MM')=$2)
  and (s.published=false
  or date_trunc('week',s.starts_at at time zone co.timezone)::date<>oa.week_start
