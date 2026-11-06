@@ -572,3 +572,21 @@ CREATE TABLE IF NOT EXISTS payroll_shift_reviews (
  PRIMARY KEY(company_id,shift_id)
 );
 CREATE INDEX IF NOT EXISTS idx_payroll_shift_reviews_employee ON payroll_shift_reviews(company_id,employee_id);
+
+-- Manager-entered draft adjustments. They do not affect payroll or payslips until a separate reconciliation workflow is approved.
+CREATE TABLE IF NOT EXISTS payroll_draft_adjustments (
+ id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+ company_id uuid NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+ employee_id uuid NOT NULL REFERENCES employees(id),
+ payroll_month date NOT NULL CHECK (extract(day from payroll_month)=1),
+ kind text NOT NULL CHECK (kind IN ('BONUS','DEDUCTION')),
+ amount numeric(14,2) NOT NULL CHECK (amount>0),
+ currency char(3) NOT NULL,
+ reason text NOT NULL CHECK (length(trim(reason))>=5),
+ created_by text NOT NULL,
+ created_at timestamptz NOT NULL DEFAULT now(),
+ voided_at timestamptz,
+ voided_by text,
+ CHECK ((voided_at IS NULL AND voided_by IS NULL) OR (voided_at IS NOT NULL AND voided_by IS NOT NULL))
+);
+CREATE INDEX IF NOT EXISTS payroll_draft_adjustments_month_idx ON payroll_draft_adjustments(company_id,payroll_month,employee_id);
