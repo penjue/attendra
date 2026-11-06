@@ -199,6 +199,38 @@ export function registerSchedulingRoutes(app:FastifyInstance,db:Pick<Pool,'query
   const blockers={...result.rows[0],missingCompensationProfiles:Number(profiles.rows[0].count),alreadyFinalisedEmployees:Number(finalised.rows[0].count),potentialUnapprovedOvertimeWeeks:Number(overtime.rows[0].count)};
   return{ok:true,month:p.month,approvalAllowed:false,blockers,notice:'Preflight only: no payroll records were written. Final approval remains disabled pending full reconciliation, rate history and payslip controls.'};
  });
+ route('GET','/v1/admin/scheduling/payroll-draft-adjustments',async(req,a)=>{
+  const p=z.object({month:z.string().regex(/^[0-9]{4}-(0[1-9]|1[0-2])$/)}).parse(req.query);
+  const r=await db.query(`select d.id,d.employee_id as "employeeId",concat(e.first_name,' ',e.last_name) as "employeeName",d.kind,d.amount::float as amount,d.currency,d.reason,d.created_at as "createdAt",d.voided_at as "voidedAt"
+    from payroll_draft_adjustments d join employees e on e.id=d.employee_id and e.company_id=d.company_id
+    where d.company_id=$1 and d.payroll_month=($2||'-01')::date order by d.created_at desc`,[a.companyId,p.month]);
+  return{ok:true,month:p.month,adjustments:r.rows,notice:'Draft entries only. They are excluded from gross payroll and payslips.'};
+ });
+ route('POST','/v1/admin/scheduling/payroll-draft-adjustments',async(req,a)=>{
+  const p=z.object({employeeId:z.uuid(),month:z.string().regex(/^[0-9]{4}-(0[1-9]|1[0-2])$/),kind:z.enum(['BONUS','DEDUCTION']),amount:z.number().finite().positive().max(100000000),reason:z.string().trim().min(5).max(1000)}).strict().parse(req.body);
+  if(Math.round(p.amount*100)!==p.amount*100&&Math.abs(Math.round(p.amount*100)-p.amount*100)>0.000001)throw new ScheduleError('ADJUSTMENT_REQUIRES_TWO_DECIMALS',400);
+  return tx(async c=>{
+   const e=await c.query(`select cp.currency from employees e join employee_compensation_profiles cp on cp.company_id=e.company_id and cp.employee_id=e.id where e.company_id=$1 and e.id=$2 and e.active=true for update of e`,[a.companyId,p.employeeId]);
+   if(!e.rowCount)throw new ScheduleError('ACTIVE_EMPLOYEE_COMPENSATION_NOT_FOUND',404);
+   const locked=await c.query(`select 1 from employee_payroll_snapshots where company_id=$1 and employee_id=$2 and payroll_month=($3||'-01')::date and status='FINALISED'`,[a.companyId,p.employeeId,p.month]);
+   if(locked.rowCount)throw new ScheduleError('PAYROLL_ALREADY_FINALISED',409);
+   const r=await c.query(`insert into payroll_draft_adjustments(company_id,employee_id,payroll_month,kind,amount,currency,reason,created_by) values($1,$2,($3||'-01')::date,$4,$5,$6,$7,$8) returning id`,[a.companyId,p.employeeId,p.month,p.kind,p.amount,e.rows[0].currency,p.reason,String(a.adminId||a.email)]);
+   await audit(c,a,'CREATE_DRAFT_PAYROLL_ADJUSTMENT','PAYROLL_ADJUSTMENT',r.rows[0].id);
+   return{ok:true,id:r.rows[0].id,notice:'Draft saved for review. No payroll amount has changed.'};
+  });
+ });
+ route('DELETE','/v1/admin/scheduling/payroll-draft-adjustments/:adjustmentId',async(req,a)=>{
+  const adjustmentId=id(req,'adjustmentId');
+  return tx(async c=>{
+   const r=await c.query(`select d.employee_id,d.payroll_month from payroll_draft_adjustments d where d.company_id=$1 and d.id=$2 and d.voided_at is null for update`,[a.companyId,adjustmentId]);
+   if(!r.rowCount)throw new ScheduleError('ACTIVE_DRAFT_ADJUSTMENT_NOT_FOUND',404);
+   const locked=await c.query(`select 1 from employee_payroll_snapshots where company_id=$1 and employee_id=$2 and payroll_month=$3 and status='FINALISED'`,[a.companyId,r.rows[0].employee_id,r.rows[0].payroll_month]);
+   if(locked.rowCount)throw new ScheduleError('PAYROLL_ALREADY_FINALISED',409);
+   await c.query(`update payroll_draft_adjustments set voided_at=now(),voided_by=$3 where company_id=$1 and id=$2`,[a.companyId,adjustmentId,String(a.adminId||a.email)]);
+   await audit(c,a,'VOID_DRAFT_PAYROLL_ADJUSTMENT','PAYROLL_ADJUSTMENT',adjustmentId);
+   return{ok:true,notice:'Draft adjustment voided; history retained.'};
+  });
+ });
  route('GET','/v1/admin/scheduling/payroll-preview',async(req,a)=>{
   const p=z.object({month:z.string().regex(/^[0-9]{4}-(0[1-9]|1[0-2])$/)}).parse(req.query);
   const result=await db.query(`with eligible_shifts as (
