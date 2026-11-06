@@ -175,7 +175,22 @@ export function registerSchedulingRoutes(app:FastifyInstance,db:Pick<Pool,'query
   const profiles=await db.query(`select count(*)::int as count from employees e where e.company_id=$1 and e.active
    and not exists(select 1 from employee_compensation_profiles cp where cp.company_id=e.company_id and cp.employee_id=e.id)`,[a.companyId]);
   const finalised=await db.query(`select count(*)::int as count from employee_payroll_snapshots where company_id=$1 and payroll_month=($2||'-01')::date and status='FINALISED'`,[a.companyId,p.month]);
-  const blockers={...result.rows[0],missingCompensationProfiles:Number(profiles.rows[0].count),alreadyFinalisedEmployees:Number(finalised.rows[0].count)};
+  const overtime=await db.query(`with weekly as (
+    select s.employee_id,date_trunc('week',s.starts_at at time zone co.timezone)::date as week_start,
+     coalesce(sp.max_weekly_hours,40)::numeric as weekly_limit,
+     sum(greatest(0,extract(epoch from(s.ends_at-s.starts_at))/3600-s.break_minutes/60.0))::numeric as assigned_hours
+    from shifts s join companies co on co.id=s.company_id
+    left join employee_schedule_profiles sp on sp.company_id=s.company_id and sp.employee_id=s.employee_id
+    where s.company_id=$1 and s.published=true
+      and date_trunc('week',s.starts_at at time zone co.timezone) in (
+        select distinct date_trunc('week',ss.starts_at at time zone co.timezone)
+        from shifts ss where ss.company_id=$1 and to_char(ss.starts_at at time zone co.timezone,'YYYY-MM')=$2)
+    group by s.employee_id,week_start,weekly_limit
+   ) select count(*)::int as count from weekly w where w.assigned_hours>w.weekly_limit
+     and w.assigned_hours-w.weekly_limit>coalesce((select sum(oa.overtime_hours) from shift_overtime_approvals oa
+       join shifts os on os.id=oa.shift_id and os.company_id=oa.company_id
+       where oa.company_id=$1 and oa.employee_id=w.employee_id and oa.week_start=w.week_start and os.published=true),0)+0.01`,[a.companyId,p.month]);
+  const blockers={...result.rows[0],missingCompensationProfiles:Number(profiles.rows[0].count),alreadyFinalisedEmployees:Number(finalised.rows[0].count),potentialUnapprovedOvertimeWeeks:Number(overtime.rows[0].count)};
   return{ok:true,month:p.month,approvalAllowed:false,blockers,notice:'Preflight only: no payroll records were written. Final approval remains disabled pending full reconciliation, rate history and payslip controls.'};
  });
  route('GET','/v1/admin/scheduling/payroll-preview',async(req,a)=>{
