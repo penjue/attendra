@@ -175,17 +175,23 @@ export function registerSchedulingRoutes(app:FastifyInstance,db:Pick<Pool,'query
   const profiles=await db.query(`select count(*)::int as count from employees e where e.company_id=$1 and e.active
    and not exists(select 1 from employee_compensation_profiles cp where cp.company_id=e.company_id and cp.employee_id=e.id)`,[a.companyId]);
   const finalised=await db.query(`select count(*)::int as count from employee_payroll_snapshots where company_id=$1 and payroll_month=($2||'-01')::date and status='FINALISED'`,[a.companyId,p.month]);
-  const overtime=await db.query(`with weekly as (
-    select s.employee_id,date_trunc('week',s.starts_at at time zone co.timezone)::date as week_start,
-     coalesce(sp.max_weekly_hours,40)::numeric as weekly_limit,
-     sum(greatest(0,extract(epoch from(s.ends_at-s.starts_at))/3600-s.break_minutes/60.0))::numeric as assigned_hours
+  const overtime=await db.query(`with week_segments as (
+    select s.employee_id,coalesce(sp.max_weekly_hours,40)::numeric as weekly_limit,
+     w.week_start::date as week_start,
+     greatest(s.starts_at,w.week_start at time zone co.timezone) as segment_start,
+     least(s.ends_at,(w.week_start+interval '7 days') at time zone co.timezone) as segment_end,
+     s.break_minutes,extract(epoch from(s.ends_at-s.starts_at))/60 as shift_minutes
     from shifts s join companies co on co.id=s.company_id
     left join employee_schedule_profiles sp on sp.company_id=s.company_id and sp.employee_id=s.employee_id
+    cross join lateral generate_series(date_trunc('week',s.starts_at at time zone co.timezone),
+      date_trunc('week',(s.ends_at-interval '1 microsecond') at time zone co.timezone),interval '7 days') as w(week_start)
     where s.company_id=$1 and s.published=true
-      and date_trunc('week',s.starts_at at time zone co.timezone) in (
-        select distinct date_trunc('week',ss.starts_at at time zone co.timezone)
-        from shifts ss where ss.company_id=$1 and to_char(ss.starts_at at time zone co.timezone,'YYYY-MM')=$2)
-    group by s.employee_id,week_start,weekly_limit
+      and to_char(w.week_start,'YYYY-MM')=$2
+   ),weekly as (
+    select employee_id,week_start,weekly_limit,
+     sum(greatest(0,extract(epoch from(segment_end-segment_start))/3600)
+       *case when shift_minutes>0 then greatest(0,1-break_minutes/shift_minutes) else 0 end)::numeric as assigned_hours
+    from week_segments group by employee_id,week_start,weekly_limit
    ) select count(*)::int as count from weekly w where w.assigned_hours>w.weekly_limit
      and w.assigned_hours-w.weekly_limit>coalesce((select sum(oa.overtime_hours) from shift_overtime_approvals oa
        join shifts os on os.id=oa.shift_id and os.company_id=oa.company_id
