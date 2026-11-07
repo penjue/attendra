@@ -590,3 +590,14 @@ CREATE TABLE IF NOT EXISTS payroll_draft_adjustments (
  CHECK ((voided_at IS NULL AND voided_by IS NULL) OR (voided_at IS NOT NULL AND voided_by IS NOT NULL))
 );
 CREATE INDEX IF NOT EXISTS payroll_draft_adjustments_month_idx ON payroll_draft_adjustments(company_id,payroll_month,employee_id);
+
+-- Approval decisions are auditable; approved adjustments remain separate from payable payroll until reconciliation is implemented.
+ALTER TABLE payroll_draft_adjustments ADD COLUMN IF NOT EXISTS review_status text NOT NULL DEFAULT 'PENDING';
+ALTER TABLE payroll_draft_adjustments ADD COLUMN IF NOT EXISTS reviewed_at timestamptz;
+ALTER TABLE payroll_draft_adjustments ADD COLUMN IF NOT EXISTS reviewed_by text;
+ALTER TABLE payroll_draft_adjustments ADD COLUMN IF NOT EXISTS review_note text;
+DO $$ BEGIN
+ IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname='payroll_draft_adjustments_review_status_check') THEN
+  ALTER TABLE payroll_draft_adjustments ADD CONSTRAINT payroll_draft_adjustments_review_status_check CHECK (review_status IN ('PENDING','APPROVED','REJECTED'));
+ END IF;
+END $$;
