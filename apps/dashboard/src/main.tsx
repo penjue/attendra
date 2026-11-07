@@ -35,6 +35,9 @@ function App() {
   const [recoveryMessage,setRecoveryMessage]=useState('');
   const [recoveryError,setRecoveryError]=useState('');
   const [activeTab, setActiveTab] = useState<Tab>('overview');
+  const [payrollReadiness,setPayrollReadiness]=useState<{readyForHistoricalPayroll:boolean;employees:Array<{employeeId:string;employeeName:string;uncoveredPublishedShifts:number;crossMonthShifts:number;rateBoundaryShifts:number;midMonthSalaryVersions:number;hasCurrentProfile:boolean;historyVersions:number}>}|null>(null);
+  const [payrollReadinessMessage,setPayrollReadinessMessage]=useState('');
+
   const [summary, setSummary] = useState<Summary>({ checkedInNow: 0, lateToday: 0, absent: 0, offlineDevices: 0 });
   const [events, setEvents] = useState<AttendanceEvent[]>([]);
   const [employees, setEmployees] = useState<Employee[]>([]);
@@ -117,6 +120,27 @@ function App() {
   const loadDevices = async () => { if (!token) return; try { const data = await fetchJson(`${API_URL}/v1/admin/devices`); setDevices(data.devices); } catch (error: any) { setDeviceMessage(error.message); } };
   const loadShifts = async () => { if (!token) return; try { const data = await fetchJson(`${API_URL}/v1/admin/shifts`); setShifts(data.shifts); } catch { setShiftMessage('Unable to refresh the shift schedule. Please try again.'); } };
   const loadAlertSettings = async () => { if (!token) return; setRulesMessage(''); try { const data = await fetchJson(`${API_URL}/v1/admin/alert-settings`); setAlertSettings(data.settings); } catch { setRulesMessage('Unable to load workforce rules. Please try again.'); } };
+  const confirmPayrollBaseline = async (employeeId:string,employeeName:string) => {
+    const effectiveFrom='2026-11-01';
+    if (!window.confirm(`Confirm that ${employeeName}'s current compensation was accurate from 1 November 2026? This creates an immutable historical record and cannot be undone.`)) return;
+    setPayrollReadinessMessage(`Recording verified compensation for ${employeeName}…`);
+    try {
+      await fetchJson(`${API_URL}/v1/admin/scheduling/compensation-baseline/${encodeURIComponent(employeeId)}`,{
+        method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({effectiveFrom,confirmedAccurate:true})
+      });
+      await loadPayrollReadiness();
+    } catch(error:any) {setPayrollReadinessMessage(error.message??'Unable to record compensation baseline');}
+  };
+
+  const loadPayrollReadiness = async () => {
+    setPayrollReadinessMessage('Checking staging compensation records…');
+    try {
+      const data=await fetchJson(`${API_URL}/v1/admin/scheduling/compensation-migration-readiness`);
+      setPayrollReadiness(data);
+      setPayrollReadinessMessage(data.readyForHistoricalPayroll?'No listed structural blockers; historical amounts still require verification.':'Review the flagged employee records before payroll calculations.');
+    } catch(error:any) {setPayrollReadiness(null);setPayrollReadinessMessage(error.message??'Readiness check failed');}
+  };
+
   const loadTimeReport = async () => {
     if (!token) return;
     setTimeMessage('');
@@ -323,6 +347,11 @@ function App() {
       </section>
       {selectedTimeEmployee&&<section className="panel timesheetPanel"><div className="panelHead"><div><h2>Daily timesheet</h2><span>{selectedEmployeeRow?`${selectedEmployeeRow.employeeName} · #${selectedEmployeeRow.employeeNumber}`:'Employee detail'}</span></div><div className="rowActions"><button onClick={()=>setSelectedTimeEmployee('')}>Close</button></div></div>{selectedEntries.length===0?<p className="empty">No daily entries for this employee in the selected period.</p>:<div className="timesheetList">{selectedEntries.map(entry=><article className={`timesheetEntry ${entry.needsReview?'needsReview':''}`} key={entry.entryId}><div className="timesheetTop"><div><strong>{new Date(`${entry.date}T12:00:00`).toLocaleDateString()} · {entry.branchName}</strong><span className={`statusChip status-${entry.status.toLowerCase()}`}>{entry.status.replace('_',' ')}</span></div>{entry.needsReview&&<b>Review required</b>}</div><div className="timesheetMetrics"><span><small>Scheduled</small>{entry.scheduledStart&&entry.scheduledEnd?`${new Date(entry.scheduledStart).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'})}–${new Date(entry.scheduledEnd).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'})}`:'Unscheduled'}</span><span><small>Check in</small>{entry.checkInAt?new Date(entry.checkInAt).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'}):'—'}</span><span><small>Check out</small>{entry.checkOutAt?new Date(entry.checkOutAt).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'}):'—'}</span><span><small>Worked</small>{minutesLabel(entry.workedMinutes)}</span></div><p className="timesheetNote">Scheduled {minutesLabel(entry.scheduledMinutes)} · Break {entry.breakMinutes}m · Late {entry.lateMinutes}m · Early leave {entry.earlyLeaveMinutes}m · Overtime {includeOvertime?minutesLabel(entry.overtimeMinutes):'excluded'}</p>{entry.shiftId===null?<div className="rowActions"><button className="dangerAction" onClick={()=>removeUnscheduledAttendance(entry)}>Remove unscheduled record</button></div>:entry.status==='OPEN'?<div className="rowActions"><button className="correctionAction" onClick={()=>fixMissingCheckout(entry)}>Fix missing checkout</button></div>:null}</article>)}</div>}</section>}
     </>}
+    {activeTab === 'reports' && <section className="panel"><div className="panelHead"><div><h2>Historical payroll readiness</h2><span>Read-only compensation and shift coverage checks. This is not payroll approval.</span></div><div className="rowActions"><button onClick={loadPayrollReadiness}>Check readiness</button></div></div>
+      {payrollReadinessMessage&&<div className="infoBox">{payrollReadinessMessage}</div>}
+      {payrollReadiness&&<><p>{payrollReadiness.employees.length} employee records checked. {payrollReadiness.readyForHistoricalPayroll?'No structural blockers reported.':'Outstanding issues require manager review.'}</p>
+      <div className="tableWrap"><table><thead><tr><th>Employee</th><th>Rate history</th><th>Uncovered shifts</th><th>Cross-month</th><th>Rate boundary</th><th>Mid-month salary</th><th>Verified baseline</th></tr></thead><tbody>{payrollReadiness.employees.map(e=><tr key={e.employeeId}><td>{e.employeeName}</td><td>{e.hasCurrentProfile?e.historyVersions:'Missing profile'}</td><td>{e.uncoveredPublishedShifts}</td><td>{e.crossMonthShifts}</td><td>{e.rateBoundaryShifts}</td><td>{e.midMonthSalaryVersions}</td><td>{e.historyVersions===0&&e.hasCurrentProfile?<button onClick={()=>confirmPayrollBaseline(e.employeeId,e.employeeName)}>Confirm 1 Nov 2026</button>:'—'}</td></tr>)}</tbody></table></div></>}
+    </section>}
     {activeTab === 'reports' && <>
       <section className="grid"><article><strong>{minutesLabel(timeTotals.workedMinutes)}</strong><span>Worked</span></article><article><strong>{minutesLabel(timeTotals.scheduledMinutes)}</strong><span>Scheduled</span></article><article><strong>{includeOvertime?minutesLabel(timeTotals.overtimeMinutes):'Excluded'}</strong><span>Overtime</span></article><article><strong>{timeTotals.missedShifts}</strong><span>Missed shifts</span></article></section>
       <section className="panel"><div className="panelHead"><div><h2>Workforce report</h2><span>Manager summary for payroll preparation and attendance review.</span></div><div className="rowActions"><button className="primary" onClick={exportTimeReportCsv}>Export CSV</button></div></div>

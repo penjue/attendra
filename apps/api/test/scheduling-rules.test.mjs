@@ -8,9 +8,9 @@ test('cover eligibility rejects absence, overlap, wrong role, wrong branch but p
  assert.equal(eligibleCover({...candidate,allowedBranches:[]},'other','',8),true);
  assert.equal(eligibleCover({...candidate,scheduledHours:40},'branch','Barista',8),true,'Manager may assign cover above the weekly limit');
 });
-test('net hours account for overnight shifts, DST and breaks',()=>{
- assert.equal(netShiftHours('2026-10-24T21:00:00Z','2026-10-25T06:00:00Z',60),8);
- assert.equal(netShiftHours('2026-10-04T21:00:00Z','2026-10-05T05:00:00Z',30),7.5);
+test('assigned hours count the full overnight shift duration without break deductions',()=>{
+ assert.equal(netShiftHours('2026-10-24T21:00:00Z','2026-10-25T06:00:00Z',60),9);
+ assert.equal(netShiftHours('2026-10-04T21:00:00Z','2026-10-05T05:00:00Z',30),8);
 });
 test('bounded date ranges reject reversed, malformed and excessively wide requests',()=>{
  assert.equal(validDateRange('2026-10-01','2026-11-30'),true);
