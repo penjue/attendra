@@ -90,6 +90,33 @@ export function registerSchedulingRoutes(app:FastifyInstance,db:Pick<Pool,'query
    order by effective_from desc`,[a.companyId,employeeId]);
   return{ok:true,history:history.rows,notice:'Historical entries are read-only. Legacy compensation profiles have not yet been backfilled.'};
  });
+ route('POST','/v1/admin/scheduling/compensation-history/:employeeId',async(req,a)=>{
+  const employeeId=id(req,'employeeId');
+  const p=z.discriminatedUnion('payType',[
+   z.object({payType:z.literal('HOURLY'),effectiveFrom:z.iso.date(),hourlyRate:z.number().finite().min(0).max(1000000)}).strict(),
+   z.object({payType:z.literal('MONTHLY'),effectiveFrom:z.iso.date(),monthlySalary:z.number().finite().min(0).max(100000000)}).strict()
+  ]).parse(req.body);
+  return tx(async c=>{
+   const employee=await c.query('select id from employees where company_id=$1 and id=$2 for update',[a.companyId,employeeId]);
+   if(!employee.rowCount)throw new ScheduleError('EMPLOYEE_NOT_FOUND',404);
+   const company=await c.query('select currency,timezone from companies where id=$1',[a.companyId]);
+   if(!company.rowCount)throw new ScheduleError('COMPANY_NOT_FOUND',404);
+   const today=await c.query('select (now() at time zone $1)::date::text as today',[company.rows[0].timezone]);
+   if(p.effectiveFrom<=today.rows[0].today)throw new ScheduleError('COMPENSATION_EFFECTIVE_DATE_MUST_BE_FUTURE',409);
+   const latest=await c.query('select effective_from::text as date from employee_compensation_history where company_id=$1 and employee_id=$2 order by effective_from desc limit 1',[a.companyId,employeeId]);
+   if(latest.rowCount && p.effectiveFrom<=latest.rows[0].date)throw new ScheduleError('COMPENSATION_EFFECTIVE_DATE_MUST_FOLLOW_EXISTING',409);
+   const existing=await c.query('select 1 from employee_compensation_profiles where company_id=$1 and employee_id=$2',[a.companyId,employeeId]);
+   if(!existing.rowCount)throw new ScheduleError('COMPENSATION_BASELINE_REQUIRED',409);
+   const rate=p.payType==='HOURLY'?p.hourlyRate:null;
+   const salary=p.payType==='MONTHLY'?p.monthlySalary:null;
+   const saved=await c.query(`insert into employee_compensation_history(company_id,employee_id,effective_from,pay_type,hourly_rate,monthly_salary,currency)
+    values($1,$2,$3,$4,$5,$6,$7)
+    returning id,effective_from as "effectiveFrom",pay_type as "payType",hourly_rate::float as "hourlyRate",monthly_salary::float as "monthlySalary",currency`,
+    [a.companyId,employeeId,p.effectiveFrom,p.payType,rate,salary,company.rows[0].currency]);
+   await audit(c,a,'SCHEDULE_COMPENSATION_CHANGE','EMPLOYEE',employeeId);
+   return{ok:true,change:saved.rows[0],notice:'Future compensation version saved. Payroll calculation still uses legacy profile until historical-rate migration is completed; do not use for payroll finalisation.'};
+  });
+ });
  route('PUT','/v1/admin/scheduling/compensation-profiles/:employeeId',async(req,a)=>{
   const employeeId=id(req,'employeeId');
   const p=z.discriminatedUnion('payType',[
