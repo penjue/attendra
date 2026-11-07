@@ -332,6 +332,16 @@ export function registerSchedulingRoutes(app:FastifyInstance,db:Pick<Pool,'query
  });
  route('GET','/v1/admin/scheduling/payroll-preview',async(req,a)=>{
   const p=z.object({month:z.string().regex(/^[0-9]{4}-(0[1-9]|1[0-2])$/)}).parse(req.query);
+  // A monthly salary change within the requested month needs a defined
+  // proration policy; never display a deceptively precise gross-pay figure.
+  const monthlyTransitions=await db.query(`select count(*)::int as count
+   from employee_compensation_history h join companies co on co.id=h.company_id
+   join employee_compensation_profiles cp on cp.company_id=h.company_id and cp.employee_id=h.employee_id
+   where h.company_id=$1 and h.pay_type='MONTHLY'
+    and to_char(h.effective_from,'YYYY-MM')=$2
+    and h.effective_from>to_date($2||'-01','YYYY-MM-DD')`,[a.companyId,p.month]);
+  if(Number(monthlyTransitions.rows[0].count)>0)
+   throw new ScheduleError('MONTHLY_SALARY_PRORATION_REQUIRES_REVIEW',409);
   const result=await db.query(`with eligible_shifts as (
    select s.id,s.employee_id,s.break_minutes,s.starts_at,s.ends_at,
     greatest(0,extract(epoch from(s.ends_at-s.starts_at))/3600)::numeric as duration_hours,
@@ -347,7 +357,7 @@ export function registerSchedulingRoutes(app:FastifyInstance,db:Pick<Pool,'query
     and not exists(select 1 from payroll_shift_reviews pr where pr.company_id=s.company_id and pr.shift_id=s.id and pr.decision='CANCELLED')
     and not exists(select 1 from employee_compensation_history h where h.company_id=s.company_id and h.employee_id=s.employee_id
       and h.effective_from>(s.starts_at at time zone co.timezone)::date
-      and h.effective_from<=(s.ends_at at time zone co.timezone)::date)
+      and (h.effective_from::timestamp at time zone co.timezone)<s.ends_at)
   ), approved as (
    select oa.shift_id,sum(oa.overtime_hours) as hours,sum(oa.overtime_hours*oa.approved_hourly_rate) as pay
    from shift_overtime_approvals oa join eligible_shifts s on s.id=oa.shift_id
