@@ -199,6 +199,18 @@ export function registerSchedulingRoutes(app:FastifyInstance,db:Pick<Pool,'query
   const blockers={...result.rows[0],missingCompensationProfiles:Number(profiles.rows[0].count),alreadyFinalisedEmployees:Number(finalised.rows[0].count),potentialUnapprovedOvertimeWeeks:Number(overtime.rows[0].count)};
   return{ok:true,month:p.month,approvalAllowed:false,blockers,notice:'Preflight only: no payroll records were written. Final approval remains disabled pending full reconciliation, rate history and payslip controls.'};
  });
+ route('GET','/v1/admin/scheduling/payroll-adjustment-reconciliation',async(req,a)=>{
+  const p=z.object({month:z.string().regex(/^[0-9]{4}-(0[1-9]|1[0-2])$/)}).parse(req.query);
+  const r=await db.query(`select d.employee_id as "employeeId",d.currency,
+   round(coalesce(sum(d.amount) filter(where d.kind='BONUS'),0),2)::float as "approvedBonuses",
+   round(coalesce(sum(d.amount) filter(where d.kind='DEDUCTION'),0),2)::float as "approvedDeductions",
+   count(*)::int as "approvedCount"
+   from payroll_draft_adjustments d
+   where d.company_id=$1 and d.payroll_month=($2||'-01')::date
+    and d.review_status='APPROVED' and d.voided_at is null
+   group by d.employee_id,d.currency`,[a.companyId,p.month]);
+  return{ok:true,month:p.month,adjustments:r.rows,notice:'Read-only approved adjustment totals. Not posted to payroll snapshots or payslips. Review blockers before finalisation.'};
+ });
  route('GET','/v1/admin/scheduling/payroll-draft-adjustments',async(req,a)=>{
   const p=z.object({month:z.string().regex(/^[0-9]{4}-(0[1-9]|1[0-2])$/)}).parse(req.query);
   const r=await db.query(`select d.id,d.employee_id as "employeeId",concat(e.first_name,' ',e.last_name) as "employeeName",d.kind,d.amount::float as amount,d.currency,d.reason,d.created_at as "createdAt",d.voided_at as "voidedAt",d.review_status as "reviewStatus",d.reviewed_at as "reviewedAt",d.review_note as "reviewNote"
