@@ -122,7 +122,7 @@ app.post('/v1/attendance/events', async (request, reply) => {
   }
 
   const input = parsed.data;
-  const occurredAt = input.occurredAt ? new Date(input.occurredAt) : new Date();
+  const occurredAt = new Date();
   const client = await db.connect();
 
   try {
