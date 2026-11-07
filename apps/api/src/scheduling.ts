@@ -454,6 +454,15 @@ export function registerSchedulingRoutes(app:FastifyInstance,db:Pick<Pool,'query
      or h.monthly_salary is distinct from cp.monthly_salary)`,[a.companyId,p.month]);
   if(Number(monthlyRateMismatch.rows[0].count)>0)
    throw new ScheduleError('MONTHLY_SALARY_HISTORY_RECONCILIATION_REQUIRED',409);
+  // A shift awaiting reassignment cannot be treated as final payable work.
+  const unresolvedReassignments=await db.query(`select count(*)::int as count
+   from payroll_shift_reviews pr join shifts s on s.id=pr.shift_id and s.company_id=pr.company_id
+   join companies co on co.id=s.company_id
+   where pr.company_id=$1 and s.published=true
+    and pr.decision='REASSIGNMENT_REQUIRED'
+    and to_char(s.starts_at at time zone co.timezone,'YYYY-MM')=$2`,[a.companyId,p.month]);
+  if(Number(unresolvedReassignments.rows[0].count)>0)
+   throw new ScheduleError('PAYROLL_REASSIGNMENT_REVIEW_REQUIRED',409);
   const result=await db.query(`with eligible_shifts as (
    select s.id,s.employee_id,s.break_minutes,s.starts_at,s.ends_at,
     greatest(0,extract(epoch from(s.ends_at-s.starts_at))/3600)::numeric as duration_hours,
