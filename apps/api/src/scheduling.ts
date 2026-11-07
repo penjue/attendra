@@ -565,6 +565,33 @@ export function registerSchedulingRoutes(app:FastifyInstance,db:Pick<Pool,'query
   return{ok:true,revoked:r.rowCount};
  });
 });
+ const overtimePolicySchema=z.object({
+  payMethod:z.enum(['NORMAL_RATE','MULTIPLIER','CUSTOM_HOURLY']),
+  baseHourlyRate:z.number().finite().min(0).max(1000000).nullable(),
+  multiplier:z.number().finite().positive().max(10).nullable(),
+  customHourlyRate:z.number().finite().min(0).max(1000000).nullable(),
+  weeklyThresholdHours:z.number().finite().positive().max(168)
+ }).superRefine((p,ctx)=>{
+  const valid=p.payMethod==='CUSTOM_HOURLY'
+   ?p.customHourlyRate!==null&&p.baseHourlyRate===null&&p.multiplier===null
+   :p.baseHourlyRate!==null&&p.customHourlyRate===null&&(p.payMethod==='MULTIPLIER'?p.multiplier!==null:p.multiplier===null);
+  if(!valid)ctx.addIssue({code:'custom',message:'Rate fields must match the selected pay method'});
+ });
+ route('GET','/v1/admin/scheduling/overtime-policy',async(_req,a)=>{
+  const r=await db.query(`select pay_method as "payMethod",base_hourly_rate::float as "baseHourlyRate",multiplier::float as multiplier,custom_hourly_rate::float as "customHourlyRate",weekly_threshold_hours::float as "weeklyThresholdHours",updated_at as "updatedAt" from company_overtime_policies where company_id=$1`,[a.companyId]);
+  return{ok:true,policy:r.rows[0]||null};
+ });
+ route('PUT','/v1/admin/scheduling/overtime-policy',async(req,a)=>{
+  const p=overtimePolicySchema.parse(req.body);
+  return tx(async c=>{
+   await c.query(`insert into company_overtime_policies(company_id,pay_method,base_hourly_rate,multiplier,custom_hourly_rate,weekly_threshold_hours,updated_by)
+    values($1,$2,$3,$4,$5,$6,$7)
+    on conflict(company_id) do update set pay_method=excluded.pay_method,base_hourly_rate=excluded.base_hourly_rate,multiplier=excluded.multiplier,custom_hourly_rate=excluded.custom_hourly_rate,weekly_threshold_hours=excluded.weekly_threshold_hours,updated_by=excluded.updated_by,updated_at=now()`,
+    [a.companyId,p.payMethod,p.baseHourlyRate,p.multiplier,p.customHourlyRate,p.weeklyThresholdHours,a.adminId||null]);
+   await audit(c,a,'UPDATE_OVERTIME_POLICY','COMPANY',a.companyId);
+   return{ok:true,notice:'Policy saved. Existing approvals are unchanged; manager approval remains mandatory.'};
+  });
+ });
  route('POST','/v1/admin/scheduling/shifts/:shiftId/overtime-approval',async(req,a)=>{
   const shiftId=id(req,'shiftId');
   const p=z.object({payMethod:z.enum(['NORMAL_RATE','MULTIPLIER','CUSTOM_HOURLY']),baseHourlyRate:z.number().finite().min(0).max(1000000).optional(),multiplier:z.number().finite().positive().max(10).optional(),customHourlyRate:z.number().finite().min(0).max(1000000).optional()}).parse(req.body);
