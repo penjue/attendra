@@ -545,6 +545,18 @@ CREATE TABLE IF NOT EXISTS employee_compensation_history (
 CREATE INDEX IF NOT EXISTS idx_employee_compensation_history_lookup
  ON employee_compensation_history(company_id,employee_id,effective_from DESC);
 
+-- Compensation history is append-only. Corrections require an explicitly
+-- audited administrative workflow, not silent mutation of past rates.
+CREATE OR REPLACE FUNCTION protect_compensation_history() RETURNS trigger AS $
+BEGIN
+ RAISE EXCEPTION 'COMPENSATION_HISTORY_IMMUTABLE';
+END;
+$ LANGUAGE plpgsql;
+DROP TRIGGER IF EXISTS trg_protect_compensation_history ON employee_compensation_history;
+CREATE TRIGGER trg_protect_compensation_history
+ BEFORE UPDATE OR DELETE ON employee_compensation_history
+ FOR EACH ROW EXECUTE FUNCTION protect_compensation_history();
+
 -- One immutable snapshot per employee and payroll month after finalisation.
 -- Drafts may be recalculated; finalised records must not be silently overwritten.
 CREATE TABLE IF NOT EXISTS employee_payroll_snapshots (
