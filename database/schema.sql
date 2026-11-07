@@ -442,6 +442,25 @@ CREATE INDEX IF NOT EXISTS idx_shifts_rota_occurrence ON shifts(rota_occurrence_
 CREATE UNIQUE INDEX IF NOT EXISTS uq_rota_recurrence_live_template
 ON rota_recurrences(template_id) WHERE status IN ('ACTIVE','PAUSED');
 
+-- Company overtime policy. Existing approvals remain untouched; policies are
+-- explicitly configured per company before they can govern future approvals.
+CREATE TABLE IF NOT EXISTS company_overtime_policies (
+ company_id uuid PRIMARY KEY REFERENCES companies(id) ON DELETE CASCADE,
+ pay_method text NOT NULL CHECK (pay_method IN ('NORMAL_RATE','MULTIPLIER','CUSTOM_HOURLY')),
+ base_hourly_rate numeric(14,4) CHECK (base_hourly_rate>=0),
+ multiplier numeric(8,4) CHECK (multiplier>0 AND multiplier<=10),
+ custom_hourly_rate numeric(14,4) CHECK (custom_hourly_rate>=0),
+ weekly_threshold_hours numeric(8,2) NOT NULL CHECK (weekly_threshold_hours>0 AND weekly_threshold_hours<=168),
+ requires_manager_approval boolean NOT NULL DEFAULT true CHECK (requires_manager_approval=true),
+ updated_by uuid REFERENCES company_admins(id) ON DELETE SET NULL,
+ updated_at timestamptz NOT NULL DEFAULT now(),
+ CHECK (
+   (pay_method='NORMAL_RATE' AND base_hourly_rate IS NOT NULL AND multiplier IS NULL AND custom_hourly_rate IS NULL)
+   OR (pay_method='MULTIPLIER' AND base_hourly_rate IS NOT NULL AND multiplier IS NOT NULL AND custom_hourly_rate IS NULL)
+   OR (pay_method='CUSTOM_HOURLY' AND custom_hourly_rate IS NOT NULL AND base_hourly_rate IS NULL AND multiplier IS NULL)
+ )
+);
+
 -- Manager-approved overtime, recorded separately from shift assignments.
 CREATE TABLE IF NOT EXISTS shift_overtime_approvals (
  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
