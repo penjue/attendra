@@ -377,6 +377,20 @@ export function registerSchedulingRoutes(app:FastifyInstance,db:Pick<Pool,'query
  });
  route('GET','/v1/admin/scheduling/payroll-preview',async(req,a)=>{
   const p=z.object({month:z.string().regex(/^[0-9]{4}-(0[1-9]|1[0-2])$/)}).parse(req.query);
+  // Until local-month splitting is implemented, a shift crossing the
+  // company-local month boundary must block payroll, not disappear from pay.
+  const crossMonthShifts=await db.query(`select count(*)::int as count from shifts s
+   join companies co on co.id=s.company_id
+   where s.company_id=$1 and s.published=true
+    and s.ends_at>s.starts_at
+    and (to_char(s.starts_at at time zone co.timezone,'YYYY-MM')=$2
+      or to_char((s.ends_at-interval '1 microsecond') at time zone co.timezone,'YYYY-MM')=$2)
+    and to_char(s.starts_at at time zone co.timezone,'YYYY-MM')
+      <>to_char((s.ends_at-interval '1 microsecond') at time zone co.timezone,'YYYY-MM')
+    and not exists(select 1 from payroll_shift_reviews pr
+     where pr.company_id=s.company_id and pr.shift_id=s.id and pr.decision='CANCELLED')`,[a.companyId,p.month]);
+  if(Number(crossMonthShifts.rows[0].count)>0)
+   throw new ScheduleError('CROSS_MONTH_SHIFT_ALLOCATION_REQUIRED',409);
   // Fail closed when an employee has rate history but no version covering
   // the start of a published shift. Never silently reprice it at today's rate.
   const uncoveredRates=await db.query(`select count(distinct s.id)::int as count
