@@ -78,6 +78,17 @@ export function registerSchedulingRoutes(app:FastifyInstance,db:Pick<Pool,'query
    where e.company_id=$1 order by e.first_name,e.last_name`,[a.companyId]);
   return{ok:true,profiles:r.rows};
  });
+ route('GET','/v1/admin/scheduling/compensation-history/:employeeId',async(req,a)=>{
+  const employeeId=id(req,'employeeId');
+  const employee=await db.query('select 1 from employees where company_id=$1 and id=$2',[a.companyId,employeeId]);
+  if(!employee.rowCount)throw new ScheduleError('EMPLOYEE_NOT_FOUND',404);
+  const history=await db.query(`select id,effective_from as "effectiveFrom",effective_until as "effectiveUntil",
+   pay_type as "payType",hourly_rate::float as "hourlyRate",monthly_salary::float as "monthlySalary",
+   currency,created_at as "createdAt"
+   from employee_compensation_history where company_id=$1 and employee_id=$2
+   order by effective_from desc`,[a.companyId,employeeId]);
+  return{ok:true,history:history.rows,notice:'Historical entries are read-only. Legacy compensation profiles have not yet been backfilled.'};
+ });
  route('PUT','/v1/admin/scheduling/compensation-profiles/:employeeId',async(req,a)=>{
   const employeeId=id(req,'employeeId');
   const p=z.discriminatedUnion('payType',[
