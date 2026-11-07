@@ -70,6 +70,24 @@ export function registerSchedulingRoutes(app:FastifyInstance,db:Pick<Pool,'query
  ) approved on true
  where assigned_hours>weekly_limit order by week_start desc,employee_id`,[a.companyId]);
  return{ok:true,overages:r.rows,notice:'Potential overtime only. No manager approval or payroll entitlement is implied.'}});
+ route('GET','/v1/admin/scheduling/compensation-migration-readiness',async(_req,a)=>{
+  // Diagnostic only: never infer historical rates from a current profile.
+  const r=await db.query(`select e.id as "employeeId",e.employee_number as "employeeNumber",
+   concat(e.first_name,' ',e.last_name) as "employeeName",
+   (cp.employee_id is not null) as "hasCurrentProfile",
+   (select count(*)::int from employee_compensation_history h where h.company_id=e.company_id and h.employee_id=e.id) as "historyVersions",
+   (select min(h.effective_from) from employee_compensation_history h where h.company_id=e.company_id and h.employee_id=e.id) as "earliestVerifiedDate",
+   (select count(*)::int from shifts s where s.company_id=e.company_id and s.employee_id=e.id and s.published=true) as "publishedShifts",
+   (select count(*)::int from shifts s join companies co on co.id=s.company_id
+    where s.company_id=e.company_id and s.employee_id=e.id and s.published=true
+    and not exists(select 1 from employee_compensation_history h where h.company_id=e.company_id and h.employee_id=e.id
+     and h.effective_from<=(s.starts_at at time zone co.timezone)::date)) as "uncoveredPublishedShifts"
+   from employees e left join employee_compensation_profiles cp on cp.company_id=e.company_id and cp.employee_id=e.id
+   where e.company_id=$1 order by e.first_name,e.last_name`,[a.companyId]);
+  const employees=r.rows;
+  return{ok:true,employees,readyForHistoricalPayroll:employees.every((e:{hasCurrentProfile:boolean;historyVersions:number;uncoveredPublishedShifts:number})=>e.hasCurrentProfile&&e.historyVersions>0&&e.uncoveredPublishedShifts===0),
+   notice:'Read-only readiness report. Verified baseline dates must come from manager-confirmed records. Coverage alone does not validate the accuracy of historical pay amounts or cross-month calculations.'};
+ });
  route('GET','/v1/admin/scheduling/compensation-profiles',async(_req,a)=>{
   const r=await db.query(`select e.id as "employeeId",e.employee_number as "employeeNumber",concat(e.first_name,' ',e.last_name) as "employeeName",e.hourly_worker as "hourlyWorker",
    cp.pay_type as "payType",cp.hourly_rate::float as "hourlyRate",cp.monthly_salary::float as "monthlySalary",co.currency,cp.updated_at as "updatedAt"
