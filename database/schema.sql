@@ -520,6 +520,31 @@ CREATE TABLE IF NOT EXISTS employee_compensation_profiles (
      OR (pay_type='MONTHLY' AND monthly_salary IS NOT NULL AND hourly_rate IS NULL))
 );
 
+-- Effective-dated compensation history. Existing profiles remain the current
+-- operational values until payroll queries and manager UI are migrated.
+-- The non-overlap exclusion constraint prevents contradictory rate periods.
+CREATE EXTENSION IF NOT EXISTS btree_gist;
+CREATE TABLE IF NOT EXISTS employee_compensation_history (
+ id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+ company_id uuid NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+ employee_id uuid NOT NULL REFERENCES employees(id) ON DELETE CASCADE,
+ effective_from date NOT NULL,
+ effective_until date,
+ pay_type text NOT NULL CHECK (pay_type IN ('HOURLY','MONTHLY')),
+ hourly_rate numeric(14,4) CHECK (hourly_rate>=0),
+ monthly_salary numeric(14,2) CHECK (monthly_salary>=0),
+ currency char(3) NOT NULL,
+ created_at timestamptz NOT NULL DEFAULT now(),
+ created_by uuid REFERENCES company_admins(id) ON DELETE SET NULL,
+ CHECK (effective_until IS NULL OR effective_until > effective_from),
+ CHECK ((pay_type='HOURLY' AND hourly_rate IS NOT NULL AND monthly_salary IS NULL)
+     OR (pay_type='MONTHLY' AND monthly_salary IS NOT NULL AND hourly_rate IS NULL)),
+ EXCLUDE USING gist (company_id WITH =, employee_id WITH =,
+  daterange(effective_from,effective_until,'[)') WITH &&)
+);
+CREATE INDEX IF NOT EXISTS idx_employee_compensation_history_lookup
+ ON employee_compensation_history(company_id,employee_id,effective_from DESC);
+
 -- One immutable snapshot per employee and payroll month after finalisation.
 -- Drafts may be recalculated; finalised records must not be silently overwritten.
 CREATE TABLE IF NOT EXISTS employee_payroll_snapshots (
