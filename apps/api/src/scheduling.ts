@@ -390,11 +390,18 @@ export function registerSchedulingRoutes(app:FastifyInstance,db:Pick<Pool,'query
   // A monthly salary change within the requested month needs a defined
   // proration policy; never display a deceptively precise gross-pay figure.
   const monthlyTransitions=await db.query(`select count(*)::int as count
-   from employee_compensation_history h join companies co on co.id=h.company_id
+   from employee_compensation_history h
    join employee_compensation_profiles cp on cp.company_id=h.company_id and cp.employee_id=h.employee_id
-   where h.company_id=$1 and h.pay_type='MONTHLY'
+   where h.company_id=$1
     and to_char(h.effective_from,'YYYY-MM')=$2
-    and h.effective_from>to_date($2||'-01','YYYY-MM-DD')`,[a.companyId,p.month]);
+    and h.effective_from>to_date($2||'-01','YYYY-MM-DD')
+    and (h.pay_type='MONTHLY' or exists (
+      select 1 from employee_compensation_history prior
+      where prior.company_id=h.company_id and prior.employee_id=h.employee_id
+       and prior.effective_from<h.effective_from and prior.pay_type='MONTHLY'
+       and not exists(select 1 from employee_compensation_history middle
+        where middle.company_id=h.company_id and middle.employee_id=h.employee_id
+         and middle.effective_from>prior.effective_from and middle.effective_from<h.effective_from)))`,[a.companyId,p.month]);
   if(Number(monthlyTransitions.rows[0].count)>0)
    throw new ScheduleError('MONTHLY_SALARY_PRORATION_REQUIRES_REVIEW',409);
   const result=await db.query(`with eligible_shifts as (
