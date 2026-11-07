@@ -89,6 +89,10 @@ export function registerSchedulingRoutes(app:FastifyInstance,db:Pick<Pool,'query
    if(!employee.rowCount)throw new ScheduleError('EMPLOYEE_NOT_FOUND',404);
    const locked=await c.query(`select 1 from employee_payroll_snapshots where company_id=$1 and employee_id=$2 and status='FINALISED' limit 1`,[a.companyId,employeeId]);
    if(locked.rowCount)throw new ScheduleError('COMPENSATION_CHANGE_REQUIRES_EFFECTIVE_DATE',409);
+   // Until effective-dated compensation history is implemented, do not allow a
+   // profile edit to retroactively reprice any already-published shift.
+   const published=await c.query('select 1 from shifts where company_id=$1 and employee_id=$2 and published=true limit 1',[a.companyId,employeeId]);
+   if(published.rowCount)throw new ScheduleError('COMPENSATION_CHANGE_REQUIRES_EFFECTIVE_DATE',409);
    const rate=p.payType==='HOURLY'?p.hourlyRate:null,salary=p.payType==='MONTHLY'?p.monthlySalary:null;
    const r=await c.query(`insert into employee_compensation_profiles(company_id,employee_id,pay_type,hourly_rate,monthly_salary,currency)
     select $1,$2,$3,$4,$5,co.currency from companies co where co.id=$1
