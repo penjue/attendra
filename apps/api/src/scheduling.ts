@@ -201,7 +201,7 @@ export function registerSchedulingRoutes(app:FastifyInstance,db:Pick<Pool,'query
  });
  route('GET','/v1/admin/scheduling/payroll-draft-adjustments',async(req,a)=>{
   const p=z.object({month:z.string().regex(/^[0-9]{4}-(0[1-9]|1[0-2])$/)}).parse(req.query);
-  const r=await db.query(`select d.id,d.employee_id as "employeeId",concat(e.first_name,' ',e.last_name) as "employeeName",d.kind,d.amount::float as amount,d.currency,d.reason,d.created_at as "createdAt",d.voided_at as "voidedAt"
+  const r=await db.query(`select d.id,d.employee_id as "employeeId",concat(e.first_name,' ',e.last_name) as "employeeName",d.kind,d.amount::float as amount,d.currency,d.reason,d.created_at as "createdAt",d.voided_at as "voidedAt",d.review_status as "reviewStatus",d.reviewed_at as "reviewedAt",d.review_note as "reviewNote"
     from payroll_draft_adjustments d join employees e on e.id=d.employee_id and e.company_id=d.company_id
     where d.company_id=$1 and d.payroll_month=($2||'-01')::date order by d.created_at desc`,[a.companyId,p.month]);
   return{ok:true,month:p.month,adjustments:r.rows,notice:'Draft entries only. They are excluded from gross payroll and payslips.'};
@@ -219,11 +219,27 @@ export function registerSchedulingRoutes(app:FastifyInstance,db:Pick<Pool,'query
    return{ok:true,id:r.rows[0].id,notice:'Draft saved for review. No payroll amount has changed.'};
   });
  });
+ route('POST','/v1/admin/scheduling/payroll-draft-adjustments/:adjustmentId/review',async(req,a)=>{
+  const adjustmentId=id(req,'adjustmentId');
+  const p=z.object({decision:z.enum(['APPROVED','REJECTED']),note:z.string().trim().min(5).max(1000)}).strict().parse(req.body);
+  return tx(async c=>{
+   const r=await c.query(`select employee_id,payroll_month,review_status,voided_at from payroll_draft_adjustments where company_id=$1 and id=$2 for update`,[a.companyId,adjustmentId]);
+   if(!r.rowCount)throw new ScheduleError('DRAFT_ADJUSTMENT_NOT_FOUND',404);
+   if(r.rows[0].voided_at||r.rows[0].review_status!=='PENDING')throw new ScheduleError('ADJUSTMENT_NOT_PENDING',409);
+   const locked=await c.query(`select 1 from employee_payroll_snapshots where company_id=$1 and employee_id=$2 and payroll_month=$3 and status='FINALISED'`,[a.companyId,r.rows[0].employee_id,r.rows[0].payroll_month]);
+   if(locked.rowCount)throw new ScheduleError('PAYROLL_ALREADY_FINALISED',409);
+   await c.query(`update payroll_draft_adjustments set review_status=$3,reviewed_at=now(),reviewed_by=$4,review_note=$5 where company_id=$1 and id=$2`,[a.companyId,adjustmentId,p.decision,String(a.adminId||a.email),p.note]);
+   await audit(c,a,p.decision==='APPROVED'?'APPROVE_DRAFT_PAYROLL_ADJUSTMENT':'REJECT_DRAFT_PAYROLL_ADJUSTMENT','PAYROLL_ADJUSTMENT',adjustmentId);
+   return{ok:true,decision:p.decision,notice:'Decision recorded. Approved adjustments are not yet applied to payroll totals or payslips.'};
+  });
+ });
  route('DELETE','/v1/admin/scheduling/payroll-draft-adjustments/:adjustmentId',async(req,a)=>{
   const adjustmentId=id(req,'adjustmentId');
   return tx(async c=>{
    const r=await c.query(`select d.employee_id,d.payroll_month from payroll_draft_adjustments d where d.company_id=$1 and d.id=$2 and d.voided_at is null for update`,[a.companyId,adjustmentId]);
    if(!r.rowCount)throw new ScheduleError('ACTIVE_DRAFT_ADJUSTMENT_NOT_FOUND',404);
+   const status=await c.query('select review_status from payroll_draft_adjustments where company_id=$1 and id=$2',[a.companyId,adjustmentId]);
+   if(status.rows[0].review_status!=='PENDING')throw new ScheduleError('REVIEWED_ADJUSTMENT_CANNOT_BE_VOIDED',409);
    const locked=await c.query(`select 1 from employee_payroll_snapshots where company_id=$1 and employee_id=$2 and payroll_month=$3 and status='FINALISED'`,[a.companyId,r.rows[0].employee_id,r.rows[0].payroll_month]);
    if(locked.rowCount)throw new ScheduleError('PAYROLL_ALREADY_FINALISED',409);
    await c.query(`update payroll_draft_adjustments set voided_at=now(),voided_by=$3 where company_id=$1 and id=$2`,[a.companyId,adjustmentId,String(a.adminId||a.email)]);
