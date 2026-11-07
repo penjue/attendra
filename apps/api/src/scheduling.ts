@@ -107,6 +107,10 @@ export function registerSchedulingRoutes(app:FastifyInstance,db:Pick<Pool,'query
    if(latest.rowCount && p.effectiveFrom<=latest.rows[0].date)throw new ScheduleError('COMPENSATION_EFFECTIVE_DATE_MUST_FOLLOW_EXISTING',409);
    const existing=await c.query('select 1 from employee_compensation_profiles where company_id=$1 and employee_id=$2',[a.companyId,employeeId]);
    if(!existing.rowCount)throw new ScheduleError('COMPENSATION_BASELINE_REQUIRED',409);
+   // A current profile alone cannot establish a trustworthy historical rate.
+   // Require an explicitly verified baseline before scheduling a new version.
+   const baseline=await c.query('select 1 from employee_compensation_history where company_id=$1 and employee_id=$2 and effective_from<=$3::date limit 1',[a.companyId,employeeId,today.rows[0].today]);
+   if(!baseline.rowCount)throw new ScheduleError('VERIFIED_COMPENSATION_BASELINE_REQUIRED',409);
    const rate=p.payType==='HOURLY'?p.hourlyRate:null;
    const salary=p.payType==='MONTHLY'?p.monthlySalary:null;
    const saved=await c.query(`insert into employee_compensation_history(company_id,employee_id,effective_from,pay_type,hourly_rate,monthly_salary,currency)
