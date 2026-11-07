@@ -82,7 +82,8 @@ export function registerSchedulingRoutes(app:FastifyInstance,db:Pick<Pool,'query
   const employeeId=id(req,'employeeId');
   const employee=await db.query('select 1 from employees where company_id=$1 and id=$2',[a.companyId,employeeId]);
   if(!employee.rowCount)throw new ScheduleError('EMPLOYEE_NOT_FOUND',404);
-  const history=await db.query(`select id,effective_from as "effectiveFrom",effective_until as "effectiveUntil",
+  const history=await db.query(`select id,effective_from as "effectiveFrom",
+   lead(effective_from) over (partition by company_id,employee_id order by effective_from) as "effectiveUntil",
    pay_type as "payType",hourly_rate::float as "hourlyRate",monthly_salary::float as "monthlySalary",
    currency,created_at as "createdAt"
    from employee_compensation_history where company_id=$1 and employee_id=$2
