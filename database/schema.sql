@@ -461,6 +461,19 @@ CREATE TABLE IF NOT EXISTS company_overtime_policies (
  )
 );
 
+-- Immutable explanation of policy overrides, tied to the recorded approval.
+CREATE TABLE IF NOT EXISTS overtime_policy_exceptions (
+ id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+ company_id uuid NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+ shift_id uuid NOT NULL REFERENCES shifts(id) ON DELETE CASCADE,
+ approved_by uuid REFERENCES company_admins(id) ON DELETE SET NULL,
+ reason text NOT NULL CHECK (length(trim(reason))>=10),
+ policy_rate numeric(14,4) NOT NULL,
+ exception_rate numeric(14,4) NOT NULL,
+ created_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_overtime_exceptions_shift ON overtime_policy_exceptions(company_id,shift_id,created_at);
+
 -- Manager-approved overtime, recorded separately from shift assignments.
 CREATE TABLE IF NOT EXISTS shift_overtime_approvals (
  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
