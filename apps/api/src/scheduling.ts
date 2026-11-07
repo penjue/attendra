@@ -159,6 +159,22 @@ export function registerSchedulingRoutes(app:FastifyInstance,db:Pick<Pool,'query
   const blockers={...q.rows[0],payrollMonthStillOpen:!company.rows[0]?.closed,missingCompensationProfiles:Number(profiles.rows[0].count),alreadyFinalisedEmployees:Number(finalised.rows[0].count)};
   return{ok:true,month:p.month,ready:false,blockers,notice:'Advisory readiness check only. Final payroll approval is disabled. An open payroll month and unfinished shifts must not be treated as ready; exception reconciliation, cross-month allocation, pay-rate history and other controls remain incomplete.'};
  });
+ route('GET','/v1/admin/scheduling/payroll-blocking-shifts',async(req,a)=>{
+  const p=z.object({month:z.string().regex(/^[0-9]{4}-(0[1-9]|1[0-2])$/)}).parse(req.query);
+  const r=await db.query(`select s.id as "shiftId",s.employee_id as "employeeId",concat(e.first_name,' ',e.last_name) as "employeeName",s.starts_at as "startsAt",s.ends_at as "endsAt",s.published,
+    case when not s.published then 'UNPUBLISHED' when s.ends_at>now() then 'NOT_FINISHED' else 'READY' end as reason
+    from shifts s join companies co on co.id=s.company_id
+    join employees e on e.id=s.employee_id and e.company_id=s.company_id
+    where s.company_id=$1 and (to_char(s.starts_at at time zone co.timezone,'YYYY-MM')=$2
+      or to_char((s.ends_at-interval '1 microsecond') at time zone co.timezone,'YYYY-MM')=$2)
+      and (s.published=false or s.ends_at>now())
+    order by s.starts_at,s.id limit 200`,[a.companyId,p.month]);
+  const total=await db.query(`select count(*)::int as count from shifts s join companies co on co.id=s.company_id
+    where s.company_id=$1 and (to_char(s.starts_at at time zone co.timezone,'YYYY-MM')=$2
+    or to_char((s.ends_at-interval '1 microsecond') at time zone co.timezone,'YYYY-MM')=$2)
+    and (s.published=false or s.ends_at>now())`,[a.companyId,p.month]);
+  return{ok:true,month:p.month,shifts:r.rows,total:Number(total.rows[0].count),notice:'Read-only blocker details; no shifts were changed.'};
+ });
  route('POST','/v1/admin/scheduling/payroll-approval-preflight',async(req,a)=>{
   const p=z.object({month:z.string().regex(/^[0-9]{4}-(0[1-9]|1[0-2])$/)}).strict().parse(req.body);
   const result=await db.query(`select coalesce(bool_or(now() at time zone co.timezone < (($2||'-01')::date+interval '1 month')),false) as "monthOpen",
