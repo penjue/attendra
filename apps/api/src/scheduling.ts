@@ -332,6 +332,17 @@ export function registerSchedulingRoutes(app:FastifyInstance,db:Pick<Pool,'query
  });
  route('GET','/v1/admin/scheduling/payroll-preview',async(req,a)=>{
   const p=z.object({month:z.string().regex(/^[0-9]{4}-(0[1-9]|1[0-2])$/)}).parse(req.query);
+  // Fail closed when an employee has rate history but no version covering
+  // the start of a published shift. Never silently reprice it at today's rate.
+  const uncoveredRates=await db.query(`select count(distinct s.id)::int as count
+   from shifts s join companies co on co.id=s.company_id
+   where s.company_id=$1 and s.published=true
+    and to_char(s.starts_at at time zone co.timezone,'YYYY-MM')=$2
+    and exists(select 1 from employee_compensation_history h where h.company_id=s.company_id and h.employee_id=s.employee_id)
+    and not exists(select 1 from employee_compensation_history h where h.company_id=s.company_id and h.employee_id=s.employee_id
+      and h.effective_from<=(s.starts_at at time zone co.timezone)::date)`,[a.companyId,p.month]);
+  if(Number(uncoveredRates.rows[0].count)>0)
+   throw new ScheduleError('COMPENSATION_HISTORY_COVERAGE_REQUIRED',409);
   // A monthly salary change within the requested month needs a defined
   // proration policy; never display a deceptively precise gross-pay figure.
   const monthlyTransitions=await db.query(`select count(*)::int as count
