@@ -383,7 +383,6 @@ export function registerSchedulingRoutes(app:FastifyInstance,db:Pick<Pool,'query
    from shifts s join companies co on co.id=s.company_id
    where s.company_id=$1 and s.published=true
     and to_char(s.starts_at at time zone co.timezone,'YYYY-MM')=$2
-    and exists(select 1 from employee_compensation_history h where h.company_id=s.company_id and h.employee_id=s.employee_id)
     and not exists(select 1 from employee_compensation_history h where h.company_id=s.company_id and h.employee_id=s.employee_id
       and h.effective_from<=(s.starts_at at time zone co.timezone)::date)`,[a.companyId,p.month]);
   if(Number(uncoveredRates.rows[0].count)>0)
@@ -401,10 +400,10 @@ export function registerSchedulingRoutes(app:FastifyInstance,db:Pick<Pool,'query
   const result=await db.query(`with eligible_shifts as (
    select s.id,s.employee_id,s.break_minutes,s.starts_at,s.ends_at,
     greatest(0,extract(epoch from(s.ends_at-s.starts_at))/3600)::numeric as duration_hours,
-    coalesce(rate.pay_type,cp.pay_type) as pay_type,coalesce(rate.hourly_rate,cp.hourly_rate) as hourly_rate,coalesce(rate.monthly_salary,cp.monthly_salary) as monthly_salary,cp.currency
+    rate.pay_type,rate.hourly_rate,rate.monthly_salary,rate.currency
    from shifts s join companies co on co.id=s.company_id
    join employee_compensation_profiles cp on cp.company_id=s.company_id and cp.employee_id=s.employee_id
-   left join lateral (select h.pay_type,h.hourly_rate,h.monthly_salary from employee_compensation_history h
+   join lateral (select h.pay_type,h.hourly_rate,h.monthly_salary,h.currency from employee_compensation_history h
     where h.company_id=s.company_id and h.employee_id=s.employee_id and h.effective_from<=(s.starts_at at time zone co.timezone)::date
     order by h.effective_from desc limit 1) rate on true
    where s.company_id=$1 and s.published=true
@@ -452,7 +451,7 @@ export function registerSchedulingRoutes(app:FastifyInstance,db:Pick<Pool,'query
    join companies co on co.id=s.company_id
    where pr.company_id=$1 and to_char(s.starts_at at time zone co.timezone,'YYYY-MM')=$2
    and to_char((s.ends_at-interval '1 microsecond') at time zone co.timezone,'YYYY-MM')=$2`,[a.companyId,p.month]);
-  return{ok:true,month:p.month,employees:result.rows,excludedShifts:Number(excluded.rows[0].count),rateBoundaryShifts:Number(rateBoundaries.rows[0].count),cancelledShifts:Number(reviews.rows[0].cancelled),pendingReassignments:Number(reviews.rows[0].pending),notice:'Read-only provisional gross pay, not a payslip. Hourly pay uses published scheduled hours less unpaid breaks and eligible approved overtime hours; monthly salaries are fixed. Only shifts wholly within the company-local month count. Cross-month and unpublished shifts are excluded. Manager-cancelled shifts are excluded from scheduled hourly pay and approved overtime; monthly base salaries remain fixed. Missing attendance alone does not reduce scheduled pay. Reassignment requests, unapproved overtime, taxes, deductions and rate versions are applied by shift start date; shifts crossing a rate-change date are excluded and counted in rateBoundaryShifts. Legacy profile rates are used where no historical version exists. Historical backfill and validation are still required. Manager review is required before finalisation.'};
+  return{ok:true,month:p.month,employees:result.rows,excludedShifts:Number(excluded.rows[0].count),rateBoundaryShifts:Number(rateBoundaries.rows[0].count),cancelledShifts:Number(reviews.rows[0].cancelled),pendingReassignments:Number(reviews.rows[0].pending),notice:'Read-only provisional gross pay, not a payslip. Hourly pay uses published scheduled hours less unpaid breaks and eligible approved overtime hours; monthly salaries are fixed. Only shifts wholly within the company-local month count. Cross-month and unpublished shifts are excluded. Manager-cancelled shifts are excluded from scheduled hourly pay and approved overtime; monthly base salaries remain fixed. Missing attendance alone does not reduce scheduled pay. Reassignment requests, unapproved overtime, taxes, deductions and rate versions are applied by shift start date; shifts crossing a rate-change date are excluded and counted in rateBoundaryShifts. Verified historical coverage is mandatory for published shifts. Historical backfill and validation are still required. Manager review is required before finalisation.'};
  });
  route('GET','/v1/admin/scheduling/payroll-overtime-preview',async(req,a)=>{
  const p=z.object({month:z.string().regex(/^[0-9]{4}-(0[1-9]|1[0-2])$/)}).parse(req.query);
