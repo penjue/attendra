@@ -598,8 +598,16 @@ export function registerSchedulingRoutes(app:FastifyInstance,db:Pick<Pool,'query
   if((p.payMethod==='NORMAL_RATE'||p.payMethod==='MULTIPLIER')&&p.baseHourlyRate===undefined)throw new ScheduleError('BASE_RATE_REQUIRED',400);
   if(p.payMethod==='MULTIPLIER'&&p.multiplier===undefined)throw new ScheduleError('MULTIPLIER_REQUIRED',400);
   if(p.payMethod==='CUSTOM_HOURLY'&&p.customHourlyRate===undefined)throw new ScheduleError('CUSTOM_RATE_REQUIRED',400);
-  const rate=p.payMethod==='CUSTOM_HOURLY'?p.customHourlyRate!:p.baseHourlyRate!*(p.payMethod==='MULTIPLIER'?p.multiplier!:1);
+  const requestedRate=p.payMethod==='CUSTOM_HOURLY'?p.customHourlyRate!:p.baseHourlyRate!*(p.payMethod==='MULTIPLIER'?p.multiplier!:1);
+  const override=z.object({exceptionReason:z.string().trim().min(10).max(1000).optional()}).parse(req.body);
   return tx(async c=>{
+   const policyResult=await c.query(`select pay_method,base_hourly_rate,multiplier,custom_hourly_rate,weekly_threshold_hours from company_overtime_policies where company_id=$1 for update`,[a.companyId]);
+   if(!policyResult.rowCount)throw new ScheduleError('COMPANY_OVERTIME_POLICY_REQUIRED',409);
+   const policy=policyResult.rows[0];
+   const policyRate=policy.pay_method==='CUSTOM_HOURLY'?Number(policy.custom_hourly_rate):Number(policy.base_hourly_rate)*(policy.pay_method==='MULTIPLIER'?Number(policy.multiplier):1);
+   const rate=override.exceptionReason?requestedRate:policyRate;
+   if(!override.exceptionReason&&(p.payMethod!==policy.pay_method||Math.abs(requestedRate-policyRate)>0.00005))throw new ScheduleError('OVERTIME_RATE_DIFFERS_FROM_COMPANY_POLICY',409);
+   if(override.exceptionReason&&!Number.isFinite(requestedRate))throw new ScheduleError('INVALID_OVERTIME_RATE',400);
    const r=await c.query(`select s.id,s.employee_id,s.starts_at,s.ends_at,s.break_minutes,s.published,co.timezone,co.currency,coalesce(pr.max_weekly_hours,40)::float as weekly_limit
    from shifts s join companies co on co.id=s.company_id left join employee_schedule_profiles pr on pr.company_id=s.company_id and pr.employee_id=s.employee_id
    where s.company_id=$1 and s.id=$2 for update of s`,[a.companyId,shiftId]);
@@ -627,7 +635,7 @@ export function registerSchedulingRoutes(app:FastifyInstance,db:Pick<Pool,'query
    coalesce(sum(hours) filter(where id=$5::uuid),0)::float as shift_hours
    from hours group by week_start`,[a.companyId,sh.employee_id,sh.starts_at,sh.timezone,shiftId,sh.starts_at]);
    if(!weekly.rowCount)throw new ScheduleError('SHIFT_WEEK_NOT_FOUND',409);
-   const prior=Number(weekly.rows[0].prior_hours),limit=Number(sh.weekly_limit);
+   const prior=Number(weekly.rows[0].prior_hours),limit=Number(policy.weekly_threshold_hours);
    const shiftHours=Number(weekly.rows[0].shift_hours);
    const overtime=Math.max(0,prior+shiftHours-limit)-Math.max(0,prior-limit);
    if(overtime<=0)throw new ScheduleError('NO_OVERTIME_TO_APPROVE',409);
@@ -637,6 +645,10 @@ export function registerSchedulingRoutes(app:FastifyInstance,db:Pick<Pool,'query
    on conflict(shift_id,week_start) do update set overtime_hours=excluded.overtime_hours,pay_method=excluded.pay_method,approved_hourly_rate=excluded.approved_hourly_rate,currency=excluded.currency,approved_by=excluded.approved_by,approved_at=now()
    returning id,overtime_hours as "overtimeHours",approved_hourly_rate as "approvedHourlyRate",currency`,
    [a.companyId,shiftId,sh.employee_id,weekly.rows[0].week_start,Math.round(overtime*100)/100,p.payMethod,Math.round(rate*10000)/10000,sh.currency,a.adminId||null]);
+   if(override.exceptionReason){
+    await c.query(`insert into overtime_policy_exceptions(company_id,shift_id,approved_by,reason,policy_rate,exception_rate) values($1,$2,$3,$4,$5,$6)`,[a.companyId,shiftId,a.adminId||null,override.exceptionReason,Math.round(policyRate*10000)/10000,Math.round(rate*10000)/10000]);
+    await audit(c,a,'OVERRIDE_OVERTIME_POLICY','SHIFT',shiftId);
+   }
    await audit(c,a,'APPROVE_SHIFT_OVERTIME','SHIFT',shiftId);
    return{ok:true,approval:approval.rows[0],notice:'Approval records the manager rate. Payroll integration is not yet enabled.'};
   });
