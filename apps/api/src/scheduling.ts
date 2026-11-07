@@ -404,6 +404,30 @@ export function registerSchedulingRoutes(app:FastifyInstance,db:Pick<Pool,'query
          and middle.effective_from>prior.effective_from and middle.effective_from<h.effective_from)))`,[a.companyId,p.month]);
   if(Number(monthlyTransitions.rows[0].count)>0)
    throw new ScheduleError('MONTHLY_SALARY_PRORATION_REQUIRES_REVIEW',409);
+  // Do not silently omit paid hours when a shift spans a rate change.
+  const crossingRateShifts=await db.query(`select count(distinct s.id)::int as count
+   from shifts s join companies co on co.id=s.company_id
+   join employee_compensation_history h on h.company_id=s.company_id and h.employee_id=s.employee_id
+   where s.company_id=$1 and s.published=true
+    and to_char(s.starts_at at time zone co.timezone,'YYYY-MM')=$2
+    and h.effective_from>(s.starts_at at time zone co.timezone)::date
+    and (h.effective_from::timestamp at time zone co.timezone)<s.ends_at`,[a.companyId,p.month]);
+  if(Number(crossingRateShifts.rows[0].count)>0)
+   throw new ScheduleError('RATE_BOUNDARY_SHIFT_SPLIT_REQUIRED',409);
+  // Monthly base pay still comes from the current profile in this provisional
+  // calculation. Reject any month whose effective historical monthly salary
+  // differs until salary versioning/proration is implemented end-to-end.
+  const monthlyRateMismatch=await db.query(`select count(*)::int as count
+   from employee_compensation_profiles cp join companies co on co.id=cp.company_id
+   left join lateral (select h.pay_type,h.monthly_salary from employee_compensation_history h
+    where h.company_id=cp.company_id and h.employee_id=cp.employee_id
+     and h.effective_from<=((to_date($2||'-01','YYYY-MM-DD')+interval '1 month - 1 day')::date)
+    order by h.effective_from desc limit 1) h on true
+   where cp.company_id=$1 and (cp.pay_type='MONTHLY' or h.pay_type='MONTHLY')
+    and (h.pay_type is distinct from 'MONTHLY' or cp.pay_type is distinct from 'MONTHLY'
+     or h.monthly_salary is distinct from cp.monthly_salary)`,[a.companyId,p.month]);
+  if(Number(monthlyRateMismatch.rows[0].count)>0)
+   throw new ScheduleError('MONTHLY_SALARY_HISTORY_RECONCILIATION_REQUIRED',409);
   const result=await db.query(`with eligible_shifts as (
    select s.id,s.employee_id,s.break_minutes,s.starts_at,s.ends_at,
     greatest(0,extract(epoch from(s.ends_at-s.starts_at))/3600)::numeric as duration_hours,
