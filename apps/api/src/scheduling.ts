@@ -196,7 +196,19 @@ export function registerSchedulingRoutes(app:FastifyInstance,db:Pick<Pool,'query
      and w.assigned_hours-w.weekly_limit>coalesce((select sum(oa.overtime_hours) from shift_overtime_approvals oa
        join shifts os on os.id=oa.shift_id and os.company_id=oa.company_id
        where oa.company_id=$1 and oa.employee_id=w.employee_id and oa.week_start=w.week_start and os.published=true),0)+0.01`,[a.companyId,p.month]);
-  const blockers={...result.rows[0],missingCompensationProfiles:Number(profiles.rows[0].count),alreadyFinalisedEmployees:Number(finalised.rows[0].count),potentialUnapprovedOvertimeWeeks:Number(overtime.rows[0].count)};
+  const adjustmentSafety=await db.query(`select
+    count(*) filter(where d.review_status='PENDING' and d.voided_at is null)::int as pending,
+    count(*) filter(where d.review_status='APPROVED' and d.voided_at is null and (cp.currency is null or cp.currency<>d.currency))::int as currency_mismatch
+    from payroll_draft_adjustments d left join employee_compensation_profiles cp on cp.company_id=d.company_id and cp.employee_id=d.employee_id
+    where d.company_id=$1 and d.payroll_month=($2||'-01')::date`,[a.companyId,p.month]);
+  const deductionSafety=await db.query(`select count(*)::int as count from (
+   select d.employee_id from payroll_draft_adjustments d
+   join employee_compensation_profiles cp on cp.company_id=d.company_id and cp.employee_id=d.employee_id
+   where d.company_id=$1 and d.payroll_month=($2||'-01')::date and d.review_status='APPROVED' and d.voided_at is null and cp.pay_type='MONTHLY'
+   group by d.employee_id,cp.monthly_salary
+   having sum(case when d.kind='DEDUCTION' then d.amount else -d.amount end)>cp.monthly_salary
+  ) negative_monthly`,[a.companyId,p.month]);
+  const blockers={...result.rows[0],missingCompensationProfiles:Number(profiles.rows[0].count),alreadyFinalisedEmployees:Number(finalised.rows[0].count),potentialUnapprovedOvertimeWeeks:Number(overtime.rows[0].count),pendingPayrollAdjustments:Number(adjustmentSafety.rows[0].pending),approvedAdjustmentCurrencyMismatches:Number(adjustmentSafety.rows[0].currency_mismatch),monthlySalaryDeductionOverruns:Number(deductionSafety.rows[0].count)};
   return{ok:true,month:p.month,approvalAllowed:false,blockers,notice:'Preflight only: no payroll records were written. Final approval remains disabled pending full reconciliation, rate history and payslip controls.'};
  });
  route('GET','/v1/admin/scheduling/payroll-adjustment-reconciliation',async(req,a)=>{
