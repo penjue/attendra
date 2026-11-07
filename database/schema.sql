@@ -520,38 +520,33 @@ CREATE TABLE IF NOT EXISTS employee_compensation_profiles (
      OR (pay_type='MONTHLY' AND monthly_salary IS NOT NULL AND hourly_rate IS NULL))
 );
 
--- Effective-dated compensation history. Existing profiles remain the current
--- operational values until payroll queries and manager UI are migrated.
--- The non-overlap exclusion constraint prevents contradictory rate periods.
-CREATE EXTENSION IF NOT EXISTS btree_gist;
+-- Effective-dated compensation versions are append-only. The next version's
+-- effective_from automatically ends the preceding version; no UPDATE is needed.
+-- Existing current profiles must be backfilled after confirming historical rates.
 CREATE TABLE IF NOT EXISTS employee_compensation_history (
  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
  company_id uuid NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
  employee_id uuid NOT NULL REFERENCES employees(id) ON DELETE CASCADE,
  effective_from date NOT NULL,
- effective_until date,
  pay_type text NOT NULL CHECK (pay_type IN ('HOURLY','MONTHLY')),
  hourly_rate numeric(14,4) CHECK (hourly_rate>=0),
  monthly_salary numeric(14,2) CHECK (monthly_salary>=0),
  currency char(3) NOT NULL,
  created_at timestamptz NOT NULL DEFAULT now(),
  created_by uuid REFERENCES company_admins(id) ON DELETE SET NULL,
- CHECK (effective_until IS NULL OR effective_until > effective_from),
+ UNIQUE (company_id,employee_id,effective_from),
  CHECK ((pay_type='HOURLY' AND hourly_rate IS NOT NULL AND monthly_salary IS NULL)
-     OR (pay_type='MONTHLY' AND monthly_salary IS NOT NULL AND hourly_rate IS NULL)),
- EXCLUDE USING gist (company_id WITH =, employee_id WITH =,
-  daterange(effective_from,effective_until,'[)') WITH &&)
+     OR (pay_type='MONTHLY' AND monthly_salary IS NOT NULL AND hourly_rate IS NULL))
 );
 CREATE INDEX IF NOT EXISTS idx_employee_compensation_history_lookup
  ON employee_compensation_history(company_id,employee_id,effective_from DESC);
 
--- Compensation history is append-only. Corrections require an explicitly
--- audited administrative workflow, not silent mutation of past rates.
-CREATE OR REPLACE FUNCTION protect_compensation_history() RETURNS trigger AS $
+-- Historical versions must not be silently rewritten or removed.
+CREATE OR REPLACE FUNCTION protect_compensation_history() RETURNS trigger AS $body$
 BEGIN
  RAISE EXCEPTION 'COMPENSATION_HISTORY_IMMUTABLE';
 END;
-$ LANGUAGE plpgsql;
+$body$ LANGUAGE plpgsql;
 DROP TRIGGER IF EXISTS trg_protect_compensation_history ON employee_compensation_history;
 CREATE TRIGGER trg_protect_compensation_history
  BEFORE UPDATE OR DELETE ON employee_compensation_history
