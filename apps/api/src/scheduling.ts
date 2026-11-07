@@ -81,12 +81,24 @@ export function registerSchedulingRoutes(app:FastifyInstance,db:Pick<Pool,'query
    (select count(*)::int from shifts s join companies co on co.id=s.company_id
     where s.company_id=e.company_id and s.employee_id=e.id and s.published=true
     and not exists(select 1 from employee_compensation_history h where h.company_id=e.company_id and h.employee_id=e.id
-     and h.effective_from<=(s.starts_at at time zone co.timezone)::date)) as "uncoveredPublishedShifts"
+     and h.effective_from<=(s.starts_at at time zone co.timezone)::date)) as "uncoveredPublishedShifts",
+   (select count(*)::int from shifts s join companies co on co.id=s.company_id
+    where s.company_id=e.company_id and s.employee_id=e.id and s.published=true
+     and to_char(s.starts_at at time zone co.timezone,'YYYY-MM')
+      <>to_char((s.ends_at-interval '1 microsecond') at time zone co.timezone,'YYYY-MM')) as "crossMonthShifts",
+   (select count(distinct s.id)::int from shifts s join companies co on co.id=s.company_id
+    join employee_compensation_history h on h.company_id=s.company_id and h.employee_id=s.employee_id
+    where s.company_id=e.company_id and s.employee_id=e.id and s.published=true
+     and h.effective_from>(s.starts_at at time zone co.timezone)::date
+     and (h.effective_from::timestamp at time zone co.timezone)<s.ends_at) as "rateBoundaryShifts",
+   (select count(*)::int from employee_compensation_history h
+    where h.company_id=e.company_id and h.employee_id=e.id and h.pay_type='MONTHLY'
+     and extract(day from h.effective_from)<>1) as "midMonthSalaryVersions"
    from employees e left join employee_compensation_profiles cp on cp.company_id=e.company_id and cp.employee_id=e.id
    where e.company_id=$1 order by e.first_name,e.last_name`,[a.companyId]);
   const employees=r.rows;
-  return{ok:true,employees,readyForHistoricalPayroll:employees.every((e:{hasCurrentProfile:boolean;historyVersions:number;uncoveredPublishedShifts:number})=>e.hasCurrentProfile&&e.historyVersions>0&&e.uncoveredPublishedShifts===0),
-   notice:'Read-only readiness report. Verified baseline dates must come from manager-confirmed records. Coverage alone does not validate the accuracy of historical pay amounts or cross-month calculations.'};
+  return{ok:true,employees,readyForHistoricalPayroll:employees.every((e:{hasCurrentProfile:boolean;historyVersions:number;uncoveredPublishedShifts:number;crossMonthShifts:number;rateBoundaryShifts:number;midMonthSalaryVersions:number})=>e.hasCurrentProfile&&e.historyVersions>0&&e.uncoveredPublishedShifts===0&&e.crossMonthShifts===0&&e.rateBoundaryShifts===0&&e.midMonthSalaryVersions===0),
+   notice:'Read-only readiness report. Verified baseline dates must come from manager-confirmed records. Readiness flags unresolved cross-month, rate-boundary and mid-month salary cases; a true result does not validate historical amounts or authorize payroll finalisation.'};
  });
  route('GET','/v1/admin/scheduling/compensation-profiles',async(_req,a)=>{
   const r=await db.query(`select e.id as "employeeId",e.employee_number as "employeeNumber",concat(e.first_name,' ',e.last_name) as "employeeName",e.hourly_worker as "hourlyWorker",
