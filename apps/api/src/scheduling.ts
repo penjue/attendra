@@ -90,6 +90,29 @@ export function registerSchedulingRoutes(app:FastifyInstance,db:Pick<Pool,'query
    order by effective_from desc`,[a.companyId,employeeId]);
   return{ok:true,history:history.rows,notice:'Historical entries are read-only. Legacy compensation profiles have not yet been backfilled.'};
  });
+ route('POST','/v1/admin/scheduling/compensation-baseline/:employeeId',async(req,a)=>{
+  const employeeId=id(req,'employeeId');
+  const p=z.object({effectiveFrom:z.iso.date(),confirmedAccurate:z.literal(true)}).strict().parse(req.body);
+  return tx(async c=>{
+   const employee=await c.query('select id from employees where company_id=$1 and id=$2 for update',[a.companyId,employeeId]);
+   if(!employee.rowCount)throw new ScheduleError('EMPLOYEE_NOT_FOUND',404);
+   const profile=await c.query(`select cp.pay_type,cp.hourly_rate,cp.monthly_salary,cp.currency,co.timezone
+    from employee_compensation_profiles cp join companies co on co.id=cp.company_id
+    where cp.company_id=$1 and cp.employee_id=$2`,[a.companyId,employeeId]);
+   if(!profile.rowCount)throw new ScheduleError('COMPENSATION_BASELINE_REQUIRED',409);
+   const today=await c.query('select (now() at time zone $1)::date::text as today',[profile.rows[0].timezone]);
+   if(p.effectiveFrom>today.rows[0].today)throw new ScheduleError('BASELINE_EFFECTIVE_DATE_CANNOT_BE_FUTURE',409);
+   const existing=await c.query('select 1 from employee_compensation_history where company_id=$1 and employee_id=$2 limit 1',[a.companyId,employeeId]);
+   if(existing.rowCount)throw new ScheduleError('COMPENSATION_BASELINE_ALREADY_EXISTS',409);
+   const v=profile.rows[0];
+   const saved=await c.query(`insert into employee_compensation_history(company_id,employee_id,effective_from,pay_type,hourly_rate,monthly_salary,currency)
+    values($1,$2,$3,$4,$5,$6,$7)
+    returning id,effective_from as "effectiveFrom",pay_type as "payType",hourly_rate::float as "hourlyRate",monthly_salary::float as "monthlySalary",currency`,
+    [a.companyId,employeeId,p.effectiveFrom,v.pay_type,v.hourly_rate,v.monthly_salary,v.currency]);
+   await audit(c,a,'CONFIRM_COMPENSATION_BASELINE','EMPLOYEE',employeeId);
+   return{ok:true,baseline:saved.rows[0],notice:'Manager-confirmed current profile and effective date recorded as immutable baseline. Earlier rates, if any, must be reviewed separately before historical payroll is trusted.'};
+  });
+ });
  route('POST','/v1/admin/scheduling/compensation-history/:employeeId',async(req,a)=>{
   const employeeId=id(req,'employeeId');
   const p=z.discriminatedUnion('payType',[
