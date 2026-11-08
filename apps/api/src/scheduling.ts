@@ -654,7 +654,17 @@ export function registerSchedulingRoutes(app:FastifyInstance,db:Pick<Pool,'query
    return{ok:true,approval:approval.rows[0],notice:'Approval records the manager rate. Payroll integration is not yet enabled.'};
   });
  });
- route('GET','/v1/admin/scheduling/assigned-hours',async(_req,a)=>{const r=await db.query(`select s.employee_id as "employeeId",s.branch_id as "branchId",count(*)::int as "shiftCount",coalesce(sum(extract(epoch from (s.ends_at-s.starts_at))/3600),0)::float as "grossHours",coalesce(sum(least(greatest(s.break_minutes,0),extract(epoch from (s.ends_at-s.starts_at))/60))/60,0)::float as "breakHours" from shifts s where s.company_id=$1 group by s.employee_id,s.branch_id`,[a.companyId]);return{ok:true,totals:r.rows}});
+ route('GET','/v1/admin/scheduling/assigned-hours',async(req,a)=>{
+  const p=z.object({from:z.iso.date(),to:z.iso.date()}).refine(v=>v.from<=v.to&&Date.parse(v.to)-Date.parse(v.from)<=366*10*86400000,'Invalid date range (maximum 10 years)').parse(req.query);
+  const r=await db.query(`select s.employee_id as "employeeId",s.branch_id as "branchId",count(*)::int as "shiftCount",
+   coalesce(sum(extract(epoch from (least(s.ends_at,(($3::date+1)::timestamp at time zone co.timezone))-greatest(s.starts_at,($2::date::timestamp at time zone co.timezone))))/3600),0)::float as "grossHours",
+   0::float as "breakHours"
+   from shifts s join companies co on co.id=s.company_id
+   where s.company_id=$1 and s.starts_at<(($3::date+1)::timestamp at time zone co.timezone)
+    and s.ends_at>($2::date::timestamp at time zone co.timezone)
+   group by s.employee_id,s.branch_id`,[a.companyId,p.from,p.to]);
+  return{ok:true,totals:r.rows};
+ });
  route('GET','/v1/admin/scheduling/calendar',async(req,a)=>{const p=rangeSchema.parse(req.query);const result=await db.query(`select ${shiftColumns} from shifts s join employees e on e.id=s.employee_id join branches b on b.id=s.branch_id join companies co on co.id=s.company_id where s.company_id=$1 and s.starts_at<($3::date+1)::timestamp at time zone co.timezone and s.ends_at>$2::date::timestamp at time zone co.timezone order by s.starts_at,e.first_name limit 10001`,[a.companyId,p.from,p.to]);return{ok:true,shifts:result.rows.slice(0,10000),truncated:result.rows.length>10000}});
  route('GET','/v1/admin/scheduling/patterns',async(_req,a)=>{const r=await db.query(`select p.id,p.employee_id as "employeeId",p.branch_id as "branchId",p.name,p.weekdays,p.start_time::text as "startTime",p.end_time::text as "endTime",p.break_minutes as "breakMinutes",concat(e.first_name,' ',e.last_name) as "employeeName",b.name as "branchName",b.timezone from shift_patterns p join employees e on e.id=p.employee_id join branches b on b.id=p.branch_id where p.company_id=$1 and p.active=true order by p.name,e.first_name`,[a.companyId]);return{ok:true,patterns:r.rows}});
  route('POST','/v1/admin/scheduling/patterns',async(req,a)=>{
