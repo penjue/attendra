@@ -642,9 +642,10 @@ export function registerSchedulingRoutes(app:FastifyInstance,db:Pick<Pool,'query
    if(!Number.isFinite(rate)||rate<0||rate>1000000)throw new ScheduleError('INVALID_OVERTIME_RATE',400);
    const approval=await c.query(`insert into shift_overtime_approvals(company_id,shift_id,employee_id,week_start,overtime_hours,pay_method,approved_hourly_rate,currency,approved_by)
    values($1,$2,$3,$4,$5,$6,$7,$8,$9)
-   on conflict(shift_id,week_start) do update set overtime_hours=excluded.overtime_hours,pay_method=excluded.pay_method,approved_hourly_rate=excluded.approved_hourly_rate,currency=excluded.currency,approved_by=excluded.approved_by,approved_at=now()
+   on conflict(shift_id,week_start) do nothing
    returning id,overtime_hours as "overtimeHours",approved_hourly_rate as "approvedHourlyRate",currency`,
    [a.companyId,shiftId,sh.employee_id,weekly.rows[0].week_start,Math.round(overtime*100)/100,p.payMethod,Math.round(rate*10000)/10000,sh.currency,a.adminId||null]);
+   if(!approval.rowCount)throw new ScheduleError('OVERTIME_ALREADY_APPROVED',409);
    if(override.exceptionReason){
     await c.query(`insert into overtime_policy_exceptions(company_id,shift_id,approved_by,reason,policy_rate,exception_rate) values($1,$2,$3,$4,$5,$6)`,[a.companyId,shiftId,a.adminId||null,override.exceptionReason,Math.round(policyRate*10000)/10000,Math.round(rate*10000)/10000]);
     await audit(c,a,'OVERRIDE_OVERTIME_POLICY','SHIFT',shiftId);
