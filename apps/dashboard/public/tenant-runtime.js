@@ -1,6 +1,6 @@
 (() => {
   const originalFetch = window.fetch.bind(window);
-  const ATTENDRA_API = 'https://attendra-api.onrender.com';
+  const ATTENDRA_API = 'https://attendra-api-staging.onrender.com';
   const TOKEN_KEY = 'attendra_admin_token';
 
   function syncSessionToken() {
