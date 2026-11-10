@@ -10,7 +10,7 @@ test('public company page contains verified legal identity and contact', () => {
   }
 });
 test('public homepage links to the workforce entrypoint', () => {
-  assert.match(read('public/company.html'), /href="\/login"/);
+  assert.match(read('public/company.html'), /href="\/login\/"/);
 });
 test('root redirect preserves existing password reset links', () => {
   const index = read('index.html');
@@ -20,4 +20,8 @@ test('root redirect preserves existing password reset links', () => {
 test('Render config preserves login SPA fallback', () => {
   const config = read('../../render.yaml');
   assert.match(config, /source: \/login\s+destination: \/index\.html/);
+});
+
+test('physical login route forwards to workforce application', () => {
+  assert.match(read('public/login/index.html'), /location\\.replace\\(\"\\/index\\.html\"/);
 });
