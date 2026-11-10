@@ -23,5 +23,5 @@ test('Render config preserves login SPA fallback', () => {
 });
 
 test('physical login route forwards to workforce application', () => {
-  assert.match(read('public/login/index.html'), /location\\.replace\\(\"\\/index\\.html\"/);
+  assert.ok(read('public/login/index.html').includes('location.replace("/index.html"'));
 });
