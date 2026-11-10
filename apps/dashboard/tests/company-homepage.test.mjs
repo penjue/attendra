@@ -21,3 +21,18 @@ test('root redirect preserves existing password reset links', () => {
 test('physical login route forwards to workforce application', () => {
   assert.ok(read('public/login/index.html').includes('location.replace("/index.html"'));
 });
+
+test('production website does not contain staging backend URLs', () => {
+  for (const path of ['index.html', 'public/company.html', 'public/login/index.html']) {
+    assert.doesNotMatch(read(path), /attendra-api-staging\\.onrender\\.com/);
+  }
+});
+test('login redirect preserves query string and fragment', () => {
+  const login = read('public/login/index.html');
+  assert.match(login, /location\\.search\\+location\\.hash/);
+});
+test('company homepage uses same-origin links and HTTPS-independent relative paths', () => {
+  const html = read('public/company.html');
+  assert.doesNotMatch(html, /href="http:\\/\\//);
+  assert.match(html, /href="mailto:admin@attendra\\.co\\.ke"/);
+});
