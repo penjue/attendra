@@ -22,17 +22,16 @@ test('physical login route forwards to workforce application', () => {
   assert.ok(read('public/login/index.html').includes('location.replace("/index.html"'));
 });
 
-test('production website does not contain staging backend URLs', () => {
+test('production release contains no staging backend URL in entrypoints', () => {
   for (const path of ['index.html', 'public/company.html', 'public/login/index.html']) {
-    assert.doesNotMatch(read(path), /attendra-api-staging\\.onrender\\.com/);
+    assert.ok(!read(path).includes('attendra-api-staging.onrender.com'));
   }
 });
 test('login redirect preserves query string and fragment', () => {
-  const login = read('public/login/index.html');
-  assert.match(login, /location\\.search\\+location\\.hash/);
+  assert.ok(read('public/login/index.html').includes('location.search+location.hash'));
 });
-test('company homepage uses same-origin links and HTTPS-independent relative paths', () => {
+test('company homepage uses same-origin navigation and official contact', () => {
   const html = read('public/company.html');
   assert.ok(!html.includes('href="http://'));
-  assert.match(html, /href="mailto:admin@attendra\\.co\\.ke"/);
+  assert.ok(html.includes('href="mailto:admin@attendra.co.ke"'));
 });
