@@ -14,8 +14,8 @@ test('public homepage links to the workforce entrypoint', () => {
 });
 test('root redirect preserves existing password reset links', () => {
   const index = read('index.html');
-  assert.match(index, /location\.pathname==="\/"/);
-  assert.match(index, /has\("resetToken"\)/);
+  assert.match(index, /location\.pathname===\x27\/\x27/);
+  assert.match(index, /has\(\x27resetToken\x27\)/);
 });
 
 test('physical login route forwards to workforce application', () => {
