@@ -23,6 +23,10 @@ services:
     runtime: static
     buildCommand: npm install && npm --workspace @attendra/dashboard run build
     staticPublishPath: apps/dashboard/dist
+    routes:
+      - type: rewrite
+        source: /login
+        destination: /index.html
     envVars:
       - key: VITE_API_URL
         sync: false
