@@ -33,6 +33,6 @@ test('login redirect preserves query string and fragment', () => {
 });
 test('company homepage uses same-origin links and HTTPS-independent relative paths', () => {
   const html = read('public/company.html');
-  assert.doesNotMatch(html, /href="http:\\/\\//);
+  assert.ok(!html.includes('href="http://'));
   assert.match(html, /href="mailto:admin@attendra\\.co\\.ke"/);
 });
