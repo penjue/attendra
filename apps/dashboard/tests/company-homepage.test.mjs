@@ -9,7 +9,7 @@ test('public company page contains verified legal identity and contact', () => {
     assert.ok(html.includes(value), 'Missing verified company information: ' + value);
   }
 });
-test('public homepage links to the workforce login', () => {
+test('public homepage links to the workforce entrypoint', () => {
   assert.match(read('public/company.html'), /href="\/login"/);
 });
 test('root redirect preserves existing password reset links', () => {
