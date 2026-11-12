@@ -1,3 +1,4 @@
+import {registerSupportRoutes,supportStatus} from './support.js';
 // Staging-only deployment check. All fixtures and approvals are rolled back.
 import assert from 'node:assert/strict';
 import {randomUUID} from 'node:crypto';
@@ -29,12 +30,18 @@ export async function verifyStagingPayroll(pool:Pick<Pool,'connect'>){
    return c.query(sql,values);
   },release:()=>{}};
   registerPayrollRoutes(app,{query:client.query,connect:async()=>client} as any);
+  registerSupportRoutes(app,{query:client.query,connect:async()=>client} as any);
   const headers={authorization:`Bearer ${signAdminToken({adminId:admin,email:'verification@example.invalid',companyId:company,role:'MANAGER',exp:Date.now()+60000})}`};
   const call=async(method:'GET'|'POST',path:string,payload?:any)=>{const r=await app.inject({method,url:'/v1/admin/payroll/'+path,headers,payload});assert.equal(r.statusCode,200,r.body);return r};
   const preview=(await call('GET','preview?month=2020-10')).json();assert.equal(preview.approvalAllowed,true);assert.equal(preview.employees[0].netPay,'110.00');
   await call('POST','approve',{month:'2020-10',previewHash:preview.previewHash});
   const slips=(await call('GET','payslips?month=2020-10')).json();assert.equal(slips.payslips.length,1);assert.equal(slips.payslips[0].data.netPay,'110.00');
   const pdf=await call('GET',`payslips/${slips.payslips[0].id}/download`);assert.equal(pdf.rawPayload.subarray(0,5).toString(),'%PDF-');
+  if(supportStatus().enabled){
+   const support=await app.inject({method:'POST',url:'/v1/admin/support/diagnostics',headers,payload:{topic:'rota',month:'2020-10'}});
+   assert.equal(support.statusCode,200,support.body);assert.equal(support.json().readOnly,true);assert.equal(support.json().context.schedule.publishedShifts,1);
+   console.log(JSON.stringify({event:'support-staging-verification',status:'passed',database,checks:['manager-auth','read-only-diagnostics','company-scope'],aiConfigured:supportStatus().aiConfigured}));
+  }
   await c.query('ROLLBACK');
   console.log(JSON.stringify({event:'payroll-staging-verification',status:'passed',database,checks:['preview','approval','snapshot','adjustments','pdf-download'],fixtures:'rolled-back'}));
  }catch(error){await c.query('ROLLBACK');throw error}finally{await app.close();c.release()}

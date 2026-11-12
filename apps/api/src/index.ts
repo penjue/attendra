@@ -1,3 +1,4 @@
+import {registerSupportRoutes,supportStatus} from './support.js';
 import { registerPayrollRoutes } from './payroll.js';
 import { registerSchedulingRoutes } from './scheduling.js';
 import { registerRotaTemplateRoutes } from './rota-templates.js';
@@ -17,6 +18,7 @@ const app = Fastify({ logger: true });
 registerEmployeeRoutes(app, db);
 registerSchedulingRoutes(app, db);
 registerPayrollRoutes(app, db);
+registerSupportRoutes(app, db);
 registerRotaTemplateRoutes(app, db);
 registerRotaOccurrenceRoutes(app, db);
 registerEmployeeQrRoutes(app, db);
@@ -26,7 +28,7 @@ const allowedOrigins = (process.env.CORS_ORIGIN ?? '').split(',').map(value => v
 await app.register(cors, { origin: allowedOrigins.length ? allowedOrigins : true });
 
 
-app.get('/health',async(_request,reply)=>{try{return{ok:true,service:'attendra-api',version:'0.9.0',database:'connected',databaseTime:await pingDatabase(),time:new Date().toISOString()}}catch(error){app.log.error(error);return reply.code(503).send({ok:false,service:'attendra-api',database:'unavailable',time:new Date().toISOString()})}});
+app.get('/health',async(_request,reply)=>{try{return{ok:true,service:'attendra-api',version:'0.9.0',database:'connected',support:supportStatus(),databaseTime:await pingDatabase(),time:new Date().toISOString()}}catch(error){app.log.error(error);return reply.code(503).send({ok:false,service:'attendra-api',database:'unavailable',time:new Date().toISOString()})}});
 const adminLoginAttempts = new Map<string,{count:number;windowStartedAt:number;blockedUntil:number}>();
 const ADMIN_LOGIN_WINDOW_MS=15*60*1000;
 const ADMIN_LOGIN_MAX_ATTEMPTS=5;
