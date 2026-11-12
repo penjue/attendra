@@ -375,3 +375,319 @@ CREATE INDEX IF NOT EXISTS idx_day_off_rules_active ON employee_day_off_rules(co
 -- Existing installations require the absence category constraint to be refreshed.
 ALTER TABLE employee_unavailability DROP CONSTRAINT IF EXISTS employee_unavailability_category_check;
 ALTER TABLE employee_unavailability ADD CONSTRAINT employee_unavailability_category_check CHECK (category IN ('ABSENCE','INJURY','LEAVE','DAY_OFF','SICKNESS'));
+
+-- Manual rota templates and optional recurrence (metadata only; no background generation yet).
+CREATE TABLE IF NOT EXISTS rota_templates (
+ id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+ company_id uuid NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+ branch_id uuid NOT NULL REFERENCES branches(id) ON DELETE CASCADE,
+ period_type text NOT NULL CHECK (period_type IN ('WEEKLY','MONTHLY')),
+ anchor_start_date date NOT NULL,
+ timezone text NOT NULL,
+ status text NOT NULL DEFAULT 'DRAFT' CHECK (status IN ('DRAFT','APPROVED','ARCHIVED')),
+ approved_version integer NOT NULL DEFAULT 0 CHECK (approved_version >= 0),
+ created_by uuid REFERENCES company_admins(id) ON DELETE SET NULL,
+ created_at timestamptz NOT NULL DEFAULT now(),
+ updated_at timestamptz NOT NULL DEFAULT now(),
+ UNIQUE (id, company_id, branch_id)
+);
+CREATE INDEX IF NOT EXISTS idx_rota_templates_branch ON rota_templates(company_id,branch_id,anchor_start_date);
+
+CREATE TABLE IF NOT EXISTS rota_template_shifts (
+ id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+ template_id uuid NOT NULL REFERENCES rota_templates(id) ON DELETE CASCADE,
+ employee_id uuid NOT NULL REFERENCES employees(id),
+ day_offset integer NOT NULL CHECK (day_offset BETWEEN 0 AND 30),
+ start_local_time time NOT NULL,
+ end_local_time time NOT NULL,
+ end_day_offset integer NOT NULL DEFAULT 0 CHECK (end_day_offset IN (0,1)),
+ break_minutes integer NOT NULL DEFAULT 0 CHECK (break_minutes >= 0),
+ created_at timestamptz NOT NULL DEFAULT now(),
+ CHECK (end_day_offset = 1 OR end_local_time > start_local_time)
+);
+CREATE INDEX IF NOT EXISTS idx_rota_template_shifts_template ON rota_template_shifts(template_id);
+
+CREATE TABLE IF NOT EXISTS rota_recurrences (
+ id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+ template_id uuid NOT NULL REFERENCES rota_templates(id) ON DELETE CASCADE,
+ cadence text NOT NULL CHECK (cadence IN ('WEEKLY','MONTHLY')),
+ end_mode text NOT NULL CHECK (end_mode IN ('UNTIL_STOPPED','ON_DATE')),
+ end_date date,
+ status text NOT NULL DEFAULT 'ACTIVE' CHECK (status IN ('ACTIVE','PAUSED','STOPPED')),
+ next_period_start date NOT NULL,
+ created_by uuid REFERENCES company_admins(id) ON DELETE SET NULL,
+ created_at timestamptz NOT NULL DEFAULT now(),
+ updated_at timestamptz NOT NULL DEFAULT now(),
+ CHECK ((end_mode='ON_DATE' AND end_date IS NOT NULL) OR (end_mode='UNTIL_STOPPED' AND end_date IS NULL))
+);
+ALTER TABLE rota_recurrences ADD COLUMN IF NOT EXISTS deleted_at timestamptz;
+CREATE INDEX IF NOT EXISTS idx_rota_recurrences_due ON rota_recurrences(status,next_period_start);
+
+CREATE TABLE IF NOT EXISTS rota_occurrences (
+ id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+ recurrence_id uuid NOT NULL REFERENCES rota_recurrences(id) ON DELETE CASCADE,
+ period_start date NOT NULL,
+ template_version integer NOT NULL CHECK (template_version >= 1),
+ status text NOT NULL DEFAULT 'DRAFT' CHECK (status IN ('DRAFT','PUBLISHED','CANCELLED')),
+ created_at timestamptz NOT NULL DEFAULT now(),
+ UNIQUE(recurrence_id,period_start)
+);
+
+-- Link generated drafts to their occurrence for auditability and safe future cleanup.
+ALTER TABLE shifts ADD COLUMN IF NOT EXISTS rota_occurrence_id uuid REFERENCES rota_occurrences(id) ON DELETE SET NULL;
+CREATE INDEX IF NOT EXISTS idx_shifts_rota_occurrence ON shifts(rota_occurrence_id) WHERE rota_occurrence_id IS NOT NULL;
+
+-- Only one non-stopped recurrence per template. Prevent duplicate schedules even
+-- when two manager requests arrive simultaneously.
+CREATE UNIQUE INDEX IF NOT EXISTS uq_rota_recurrence_live_template
+ON rota_recurrences(template_id) WHERE status IN ('ACTIVE','PAUSED');
+
+-- Company overtime policy. Existing approvals remain untouched; policies are
+-- explicitly configured per company before they can govern future approvals.
+CREATE TABLE IF NOT EXISTS company_overtime_policies (
+ company_id uuid PRIMARY KEY REFERENCES companies(id) ON DELETE CASCADE,
+ pay_method text NOT NULL CHECK (pay_method IN ('NORMAL_RATE','MULTIPLIER','CUSTOM_HOURLY')),
+ base_hourly_rate numeric(14,4) CHECK (base_hourly_rate>=0),
+ multiplier numeric(8,4) CHECK (multiplier>0 AND multiplier<=10),
+ custom_hourly_rate numeric(14,4) CHECK (custom_hourly_rate>=0),
+ weekly_threshold_hours numeric(8,2) NOT NULL CHECK (weekly_threshold_hours>0 AND weekly_threshold_hours<=168),
+ requires_manager_approval boolean NOT NULL DEFAULT true CHECK (requires_manager_approval=true),
+ updated_by uuid REFERENCES company_admins(id) ON DELETE SET NULL,
+ updated_at timestamptz NOT NULL DEFAULT now(),
+ CHECK (
+   (pay_method='NORMAL_RATE' AND base_hourly_rate IS NOT NULL AND multiplier IS NULL AND custom_hourly_rate IS NULL)
+   OR (pay_method='MULTIPLIER' AND base_hourly_rate IS NOT NULL AND multiplier IS NOT NULL AND custom_hourly_rate IS NULL)
+   OR (pay_method='CUSTOM_HOURLY' AND custom_hourly_rate IS NOT NULL AND base_hourly_rate IS NULL AND multiplier IS NULL)
+ )
+);
+
+-- Immutable explanation of policy overrides, tied to the recorded approval.
+CREATE TABLE IF NOT EXISTS overtime_policy_exceptions (
+ id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+ company_id uuid NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+ shift_id uuid NOT NULL REFERENCES shifts(id) ON DELETE CASCADE,
+ approved_by uuid REFERENCES company_admins(id) ON DELETE SET NULL,
+ reason text NOT NULL CHECK (length(trim(reason))>=10),
+ policy_rate numeric(14,4) NOT NULL,
+ exception_rate numeric(14,4) NOT NULL,
+ created_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_overtime_exceptions_shift ON overtime_policy_exceptions(company_id,shift_id,created_at);
+
+-- Manager-approved overtime, recorded separately from shift assignments.
+CREATE TABLE IF NOT EXISTS shift_overtime_approvals (
+ id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+ company_id uuid NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+ shift_id uuid NOT NULL REFERENCES shifts(id) ON DELETE CASCADE,
+ employee_id uuid NOT NULL REFERENCES employees(id),
+ week_start date NOT NULL,
+ overtime_hours numeric(10,2) NOT NULL CHECK(overtime_hours>0),
+ pay_method text NOT NULL CHECK(pay_method IN ('NORMAL_RATE','MULTIPLIER','CUSTOM_HOURLY')),
+ approved_hourly_rate numeric(14,4) NOT NULL CHECK(approved_hourly_rate>=0),
+ currency char(3) NOT NULL,
+ approved_by uuid REFERENCES company_admins(id) ON DELETE SET NULL,
+ approved_at timestamptz NOT NULL DEFAULT now(),
+ UNIQUE(shift_id,week_start)
+);
+CREATE INDEX IF NOT EXISTS idx_overtime_company_week ON shift_overtime_approvals(company_id,employee_id,week_start);
+
+-- Invalidate approvals for the affected employee whenever the shift roster changes.
+-- INSERT/DELETE matter too: adding or removing a shift can change which shift
+-- crosses the weekly threshold, even if the approved shift itself is unchanged.
+CREATE OR REPLACE FUNCTION invalidate_shift_overtime_approvals() RETURNS trigger
+LANGUAGE plpgsql AS $$
+BEGIN
+ IF TG_OP = 'INSERT' THEN
+   DELETE FROM shift_overtime_approvals WHERE company_id=NEW.company_id AND employee_id=NEW.employee_id;
+   RETURN NEW;
+ ELSIF TG_OP = 'DELETE' THEN
+   DELETE FROM shift_overtime_approvals WHERE company_id=OLD.company_id AND employee_id=OLD.employee_id;
+   RETURN OLD;
+ ELSIF OLD.employee_id IS DISTINCT FROM NEW.employee_id
+    OR OLD.company_id IS DISTINCT FROM NEW.company_id
+    OR OLD.starts_at IS DISTINCT FROM NEW.starts_at
+    OR OLD.ends_at IS DISTINCT FROM NEW.ends_at
+    OR OLD.break_minutes IS DISTINCT FROM NEW.break_minutes THEN
+   DELETE FROM shift_overtime_approvals WHERE company_id=OLD.company_id AND employee_id=OLD.employee_id;
+   IF NEW.company_id IS DISTINCT FROM OLD.company_id OR NEW.employee_id IS DISTINCT FROM OLD.employee_id THEN
+     DELETE FROM shift_overtime_approvals WHERE company_id=NEW.company_id AND employee_id=NEW.employee_id;
+   END IF;
+ END IF;
+ RETURN NEW;
+END;
+$$;
+DROP TRIGGER IF EXISTS trg_invalidate_shift_overtime_approvals ON shifts;
+CREATE TRIGGER trg_invalidate_shift_overtime_approvals
+AFTER INSERT OR DELETE OR UPDATE OF employee_id,company_id,starts_at,ends_at,break_minutes ON shifts
+FOR EACH ROW EXECUTE FUNCTION invalidate_shift_overtime_approvals();
+
+-- Weekly-hour limit changes alter the overtime threshold for every affected week.
+CREATE OR REPLACE FUNCTION invalidate_overtime_on_weekly_limit_change() RETURNS trigger
+LANGUAGE plpgsql AS $$
+BEGIN
+ IF OLD.max_weekly_hours IS DISTINCT FROM NEW.max_weekly_hours THEN
+   DELETE FROM shift_overtime_approvals
+   WHERE company_id=NEW.company_id AND employee_id=NEW.employee_id;
+ END IF;
+ RETURN NEW;
+END;
+$$;
+DROP TRIGGER IF EXISTS trg_invalidate_overtime_weekly_limit ON employee_schedule_profiles;
+CREATE TRIGGER trg_invalidate_overtime_weekly_limit
+AFTER UPDATE OF max_weekly_hours ON employee_schedule_profiles
+FOR EACH ROW EXECUTE FUNCTION invalidate_overtime_on_weekly_limit_change();
+
+-- Payroll compensation is company-scoped and independent of branch assignment.
+-- Rates are stored as decimals; payroll must calculate and snapshot before finalisation.
+CREATE TABLE IF NOT EXISTS employee_compensation_profiles (
+ company_id uuid NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+ employee_id uuid NOT NULL REFERENCES employees(id) ON DELETE CASCADE,
+ pay_type text NOT NULL CHECK (pay_type IN ('HOURLY','MONTHLY')),
+ hourly_rate numeric(14,4) CHECK (hourly_rate>=0),
+ monthly_salary numeric(14,2) CHECK (monthly_salary>=0),
+ currency char(3) NOT NULL,
+ updated_at timestamptz NOT NULL DEFAULT now(),
+ PRIMARY KEY (company_id,employee_id),
+ CHECK ((pay_type='HOURLY' AND hourly_rate IS NOT NULL AND monthly_salary IS NULL)
+     OR (pay_type='MONTHLY' AND monthly_salary IS NOT NULL AND hourly_rate IS NULL))
+);
+
+-- Effective-dated compensation versions are append-only. The next version's
+-- effective_from automatically ends the preceding version; no UPDATE is needed.
+-- Existing current profiles must be backfilled after confirming historical rates.
+CREATE TABLE IF NOT EXISTS employee_compensation_history (
+ id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+ company_id uuid NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+ employee_id uuid NOT NULL REFERENCES employees(id) ON DELETE CASCADE,
+ effective_from date NOT NULL,
+ pay_type text NOT NULL CHECK (pay_type IN ('HOURLY','MONTHLY')),
+ hourly_rate numeric(14,4) CHECK (hourly_rate>=0),
+ monthly_salary numeric(14,2) CHECK (monthly_salary>=0),
+ currency char(3) NOT NULL,
+ created_at timestamptz NOT NULL DEFAULT now(),
+ created_by uuid REFERENCES company_admins(id) ON DELETE SET NULL,
+ UNIQUE (company_id,employee_id,effective_from),
+ CHECK ((pay_type='HOURLY' AND hourly_rate IS NOT NULL AND monthly_salary IS NULL)
+     OR (pay_type='MONTHLY' AND monthly_salary IS NOT NULL AND hourly_rate IS NULL))
+);
+CREATE INDEX IF NOT EXISTS idx_employee_compensation_history_lookup
+ ON employee_compensation_history(company_id,employee_id,effective_from DESC);
+
+-- Historical versions must not be silently rewritten or removed.
+CREATE OR REPLACE FUNCTION protect_compensation_history() RETURNS trigger AS $body$
+BEGIN
+ RAISE EXCEPTION 'COMPENSATION_HISTORY_IMMUTABLE';
+END;
+$body$ LANGUAGE plpgsql;
+DROP TRIGGER IF EXISTS trg_protect_compensation_history ON employee_compensation_history;
+CREATE TRIGGER trg_protect_compensation_history
+ BEFORE UPDATE OR DELETE ON employee_compensation_history
+ FOR EACH ROW EXECUTE FUNCTION protect_compensation_history();
+
+-- One immutable snapshot per employee and payroll month after finalisation.
+-- Drafts may be recalculated; finalised records must not be silently overwritten.
+CREATE TABLE IF NOT EXISTS employee_payroll_snapshots (
+ id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+ company_id uuid NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+ employee_id uuid NOT NULL REFERENCES employees(id),
+ payroll_month date NOT NULL CHECK (extract(day from payroll_month)=1),
+ currency char(3) NOT NULL,
+ pay_type text NOT NULL CHECK (pay_type IN ('HOURLY','MONTHLY')),
+ regular_hours numeric(12,2) NOT NULL CHECK (regular_hours>=0),
+ regular_pay numeric(14,2) NOT NULL CHECK (regular_pay>=0),
+ overtime_hours numeric(12,2) NOT NULL CHECK (overtime_hours>=0),
+ overtime_pay numeric(14,2) NOT NULL CHECK (overtime_pay>=0),
+ gross_pay numeric(14,2) GENERATED ALWAYS AS (regular_pay+overtime_pay) STORED,
+ status text NOT NULL DEFAULT 'DRAFT' CHECK (status IN ('DRAFT','FINALISED')),
+ calculated_at timestamptz NOT NULL DEFAULT now(),
+ finalised_at timestamptz,
+ finalised_by uuid REFERENCES company_admins(id) ON DELETE SET NULL,
+ UNIQUE (company_id,employee_id,payroll_month),
+ CHECK ((status='DRAFT' AND finalised_at IS NULL) OR (status='FINALISED' AND finalised_at IS NOT NULL))
+);
+CREATE INDEX IF NOT EXISTS idx_employee_payroll_month ON employee_payroll_snapshots(company_id,payroll_month);
+CREATE OR REPLACE FUNCTION protect_finalised_payroll_snapshot() RETURNS trigger
+LANGUAGE plpgsql AS $$
+BEGIN
+ IF TG_OP='DELETE' AND OLD.status='FINALISED' THEN
+   RAISE EXCEPTION 'FINALISED_PAYROLL_IMMUTABLE';
+ END IF;
+ IF TG_OP='UPDATE' AND OLD.status='FINALISED' THEN
+   RAISE EXCEPTION 'FINALISED_PAYROLL_IMMUTABLE';
+ END IF;
+ RETURN CASE WHEN TG_OP='DELETE' THEN OLD ELSE NEW END;
+END;
+$$;
+DROP TRIGGER IF EXISTS trg_protect_finalised_payroll_snapshot ON employee_payroll_snapshots;
+CREATE TRIGGER trg_protect_finalised_payroll_snapshot
+BEFORE UPDATE OR DELETE ON employee_payroll_snapshots
+FOR EACH ROW EXECUTE FUNCTION protect_finalised_payroll_snapshot();
+
+-- Explicit manager decisions for attendance-related payroll exceptions.
+-- Decisions are recorded independently; payroll calculations must reconcile them before finalisation.
+CREATE TABLE IF NOT EXISTS payroll_shift_reviews (
+ company_id uuid NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+ shift_id uuid NOT NULL REFERENCES shifts(id) ON DELETE CASCADE,
+ employee_id uuid NOT NULL REFERENCES employees(id),
+ decision text NOT NULL CHECK (decision IN ('WORKED','CANCELLED','REASSIGNMENT_REQUIRED')),
+ note text NOT NULL DEFAULT '',
+ reviewed_by uuid REFERENCES company_admins(id) ON DELETE SET NULL,
+ reviewed_at timestamptz NOT NULL DEFAULT now(),
+ PRIMARY KEY(company_id,shift_id)
+);
+CREATE INDEX IF NOT EXISTS idx_payroll_shift_reviews_employee ON payroll_shift_reviews(company_id,employee_id);
+
+-- Manager-entered draft adjustments. They do not affect payroll or payslips until a separate reconciliation workflow is approved.
+CREATE TABLE IF NOT EXISTS payroll_draft_adjustments (
+ id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+ company_id uuid NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+ employee_id uuid NOT NULL REFERENCES employees(id),
+ payroll_month date NOT NULL CHECK (extract(day from payroll_month)=1),
+ kind text NOT NULL CHECK (kind IN ('BONUS','DEDUCTION')),
+ amount numeric(14,2) NOT NULL CHECK (amount>0),
+ currency char(3) NOT NULL,
+ reason text NOT NULL CHECK (length(trim(reason))>=5),
+ created_by text NOT NULL,
+ created_at timestamptz NOT NULL DEFAULT now(),
+ voided_at timestamptz,
+ voided_by text,
+ CHECK ((voided_at IS NULL AND voided_by IS NULL) OR (voided_at IS NOT NULL AND voided_by IS NOT NULL))
+);
+CREATE INDEX IF NOT EXISTS payroll_draft_adjustments_month_idx ON payroll_draft_adjustments(company_id,payroll_month,employee_id);
+
+-- Approval decisions are auditable; approved adjustments remain separate from payable payroll until reconciliation is implemented.
+ALTER TABLE payroll_draft_adjustments ADD COLUMN IF NOT EXISTS review_status text NOT NULL DEFAULT 'PENDING';
+ALTER TABLE payroll_draft_adjustments ADD COLUMN IF NOT EXISTS reviewed_at timestamptz;
+ALTER TABLE payroll_draft_adjustments ADD COLUMN IF NOT EXISTS reviewed_by text;
+ALTER TABLE payroll_draft_adjustments ADD COLUMN IF NOT EXISTS review_note text;
+DO $$ BEGIN
+ IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname='payroll_draft_adjustments_review_status_check') THEN
+  ALTER TABLE payroll_draft_adjustments ADD CONSTRAINT payroll_draft_adjustments_review_status_check CHECK (review_status IN ('PENDING','APPROVED','REJECTED'));
+ END IF;
+END $$;
+
+
+-- Final payroll stores identity, source reconciliation and adjustments at approval time.
+ALTER TABLE employee_payroll_snapshots ADD COLUMN IF NOT EXISTS bonus_pay numeric(14,2) NOT NULL DEFAULT 0 CHECK (bonus_pay>=0);
+ALTER TABLE employee_payroll_snapshots ADD COLUMN IF NOT EXISTS deductions numeric(14,2) NOT NULL DEFAULT 0 CHECK (deductions>=0);
+ALTER TABLE employee_payroll_snapshots ADD COLUMN IF NOT EXISTS payslip_data jsonb;
+CREATE TABLE IF NOT EXISTS payroll_runs (
+ id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+ company_id uuid NOT NULL REFERENCES companies(id),
+ payroll_month date NOT NULL CHECK (extract(day from payroll_month)=1),
+ preview_hash text NOT NULL,
+ approved_by uuid NOT NULL REFERENCES company_admins(id),
+ approved_at timestamptz NOT NULL DEFAULT now(),
+ UNIQUE(company_id,payroll_month)
+);
+CREATE OR REPLACE FUNCTION protect_payroll_run() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN RAISE EXCEPTION 'FINALISED_PAYROLL_IMMUTABLE'; END;
+$$;
+DROP TRIGGER IF EXISTS trg_protect_payroll_run ON payroll_runs;
+CREATE TRIGGER trg_protect_payroll_run BEFORE UPDATE OR DELETE ON payroll_runs
+FOR EACH ROW EXECUTE FUNCTION protect_payroll_run();
+
+ALTER TABLE employee_payroll_snapshots ADD COLUMN IF NOT EXISTS total_earnings numeric(14,2)
+ GENERATED ALWAYS AS (regular_pay+overtime_pay+bonus_pay) STORED;
+ALTER TABLE employee_payroll_snapshots ADD COLUMN IF NOT EXISTS net_pay numeric(14,2)
+ GENERATED ALWAYS AS (regular_pay+overtime_pay+bonus_pay-deductions) STORED;

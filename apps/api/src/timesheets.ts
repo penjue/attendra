@@ -88,7 +88,7 @@ export const registerTimesheetRoutes=(app:any,requireAdmin:RequireAdmin)=>{
     if(!p.success)return reply.code(400).send({ok:false,error:'INVALID_REQUEST'});
     const employee=await db.query(`select id from employees where company_id=$1 and employee_number=$2 and active=true and pin_hash=crypt($3,pin_hash) limit 1`,[p.data.companyId,p.data.employeeNumber,p.data.pin]);
     if(!employee.rowCount)return reply.code(401).send({ok:false,error:'INVALID_EMPLOYEE_OR_PIN'});
-    const shift=await db.query(`select id,starts_at as "startsAt",ends_at as "endsAt" from shifts where published=true and company_id=$1 and branch_id=$2 and employee_id=$3 and $4::timestamptz between starts_at-interval '4 hours' and ends_at+interval '4 hours' order by abs(extract(epoch from(starts_at-$4::timestamptz))) limit 1`,[p.data.companyId,p.data.branchId,employee.rows[0].id,p.data.occurredAt]);
+    const shift=await db.query(`select id,starts_at as "startsAt",ends_at as "endsAt" from shifts where published=true and company_id=$1 and branch_id=$2 and employee_id=$3 and $4::timestamptz between starts_at-interval '4 hours' and ends_at+interval '4 hours' order by abs(extract(epoch from(starts_at-$4::timestamptz))) limit 1`,[p.data.companyId,p.data.branchId,employee.rows[0].id,new Date().toISOString()]);
     if(!shift.rowCount)return reply.code(409).send({ok:false,error:'NO_SCHEDULED_SHIFT'});
     return{ok:true,shift:shift.rows[0]};
   });

@@ -138,27 +138,8 @@ function App() {
   const QUEUE_KEY = 'attendra-offline-attendance-v1';
   const readQueue = () => { try { return JSON.parse(localStorage.getItem(QUEUE_KEY) ?? '[]') as any[]; } catch { return []; } };
   const writeQueue = (items: any[]) => { localStorage.setItem(QUEUE_KEY, JSON.stringify(items)); setPendingSync(items.length); };
-  const syncQueue = async () => {
-    if (!config || !navigator.onLine) return;
-    const queued = readQueue(); if (!queued.length) { setPendingSync(0); return; }
-    const remaining:any[] = [];
-    for (const item of queued) {
-      try {
-        const response = await fetch(`${API_URL}/v1/attendance/events`, { method:'POST', headers:{'content-type':'application/json'}, body:JSON.stringify(item) });
-        if (!response.ok) remaining.push(item);
-      } catch { remaining.push(item); }
-    }
-    writeQueue(remaining);
-  };
-
-  useEffect(() => {
-    setPendingSync(readQueue().length);
-    const onOnline = () => { void syncQueue(); };
-    window.addEventListener('online', onOnline);
-    const timer = window.setInterval(() => { void syncQueue(); }, 30000);
-    void syncQueue();
-    return () => { window.removeEventListener('online', onOnline); window.clearInterval(timer); };
-  }, [config?.deviceId, config?.deviceKey]);
+  // Offline entries are unverified and must never be silently replayed as live attendance.
+  useEffect(() => { setPendingSync(readQueue().length); }, []);
 
   const submit = async (action: 'CHECK_IN' | 'CHECK_OUT') => {
     if (!config || !configured || !employee || pin.length < 4 || busy) return;
@@ -236,10 +217,7 @@ function App() {
     } catch (error) {
       const networkFailure = !navigator.onLine || (error instanceof TypeError);
       if (networkFailure && config) {
-        const queued = readQueue();
-        queued.push({ companyId:config.companyId, branchId:config.branchId, deviceId:config.deviceId, deviceKey:config.deviceKey, employeeNumber:employee.trim(), pin, action, occurredAt:new Date().toISOString(), clientEventId:crypto.randomUUID() });
-        writeQueue(queued);
-        setMessage({ type:'success', text:'Internet unavailable. Attendance saved securely on this tablet and will sync automatically when the connection returns.' });
+        setMessage({ type:'error', text:'Internet unavailable. Attendance was NOT recorded. Please reconnect and try again, or ask your manager to document the missed attendance with an audited correction.' });
       } else {
         setMessage({ type: 'error', text: error instanceof Error ? error.message : 'Unable to record attendance.' });
       }
