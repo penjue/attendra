@@ -9,6 +9,10 @@ const schemaPath = resolve(repoRoot, 'database/schema.sql');
 const seedPath = resolve(repoRoot, 'database/demo_seed.sql');
 
 try {
+  if(process.env.ATTENDRA_EXPECTED_DATABASE){
+    const actual=(await db.query('select current_database() as name')).rows[0].name;
+    if(actual!==process.env.ATTENDRA_EXPECTED_DATABASE)throw new Error('DATABASE_TARGET_MISMATCH');
+  }
   const schema = await readFile(schemaPath, 'utf8');
   await db.query(schema);
 

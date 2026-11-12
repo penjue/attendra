@@ -257,7 +257,7 @@ export function registerSchedulingRoutes(app:FastifyInstance,db:Pick<Pool,'query
   const finalised=await db.query(`select count(*)::int as count from employee_payroll_snapshots where company_id=$1 and payroll_month=($2||'-01')::date and status='FINALISED'`,[a.companyId,p.month]);
   const company=await db.query(`select (date_trunc('month',now() at time zone timezone) > ($2||'-01')::date) as closed from companies where id=$1`,[a.companyId,p.month]);
   const blockers={...q.rows[0],payrollMonthStillOpen:!company.rows[0]?.closed,missingCompensationProfiles:Number(profiles.rows[0].count),alreadyFinalisedEmployees:Number(finalised.rows[0].count)};
-  return{ok:true,month:p.month,ready:false,blockers,notice:'Advisory readiness check only. Final payroll approval is disabled. An open payroll month and unfinished shifts must not be treated as ready; exception reconciliation, cross-month allocation, pay-rate history and other controls remain incomplete.'};
+  return{ok:true,month:p.month,ready:false,blockers,notice:'Advisory readiness check only. Use Payroll approval and payslips to review and approve payroll. An open payroll month and unfinished shifts must not be treated as ready; exception reconciliation, cross-month allocation, pay-rate history and other controls remain incomplete.'};
  });
  route('GET','/v1/admin/scheduling/payroll-blocking-shifts',async(req,a)=>{
   const p=z.object({month:z.string().regex(/^[0-9]{4}-(0[1-9]|1[0-2])$/)}).parse(req.query);
@@ -325,7 +325,7 @@ export function registerSchedulingRoutes(app:FastifyInstance,db:Pick<Pool,'query
    having sum(case when d.kind='DEDUCTION' then d.amount else -d.amount end)>cp.monthly_salary
   ) negative_monthly`,[a.companyId,p.month]);
   const blockers={...result.rows[0],missingCompensationProfiles:Number(profiles.rows[0].count),alreadyFinalisedEmployees:Number(finalised.rows[0].count),potentialUnapprovedOvertimeWeeks:Number(overtime.rows[0].count),pendingPayrollAdjustments:Number(adjustmentSafety.rows[0].pending),approvedAdjustmentCurrencyMismatches:Number(adjustmentSafety.rows[0].currency_mismatch),monthlySalaryDeductionOverruns:Number(deductionSafety.rows[0].count)};
-  return{ok:true,month:p.month,approvalAllowed:false,blockers,notice:'Preflight only: no payroll records were written. Final approval remains disabled pending full reconciliation, rate history and payslip controls.'};
+  return{ok:true,month:p.month,approvalAllowed:false,blockers,notice:'Preflight only: no payroll records were written. Use Payroll approval and payslips for the current approval checks.'};
  });
  route('GET','/v1/admin/scheduling/payroll-adjustment-reconciliation',async(req,a)=>{
   const p=z.object({month:z.string().regex(/^[0-9]{4}-(0[1-9]|1[0-2])$/)}).parse(req.query);
@@ -387,138 +387,7 @@ export function registerSchedulingRoutes(app:FastifyInstance,db:Pick<Pool,'query
    return{ok:true,notice:'Draft adjustment voided; history retained.'};
   });
  });
- route('GET','/v1/admin/scheduling/payroll-preview',async(req,a)=>{
-  const p=z.object({month:z.string().regex(/^[0-9]{4}-(0[1-9]|1[0-2])$/)}).parse(req.query);
-  // Until local-month splitting is implemented, a shift crossing the
-  // company-local month boundary must block payroll, not disappear from pay.
-  const crossMonthShifts=await db.query(`select count(*)::int as count from shifts s
-   join companies co on co.id=s.company_id
-   where s.company_id=$1 and s.published=true
-    and s.ends_at>s.starts_at
-    and (to_char(s.starts_at at time zone co.timezone,'YYYY-MM')=$2
-      or to_char((s.ends_at-interval '1 microsecond') at time zone co.timezone,'YYYY-MM')=$2)
-    and to_char(s.starts_at at time zone co.timezone,'YYYY-MM')
-      <>to_char((s.ends_at-interval '1 microsecond') at time zone co.timezone,'YYYY-MM')
-    and not exists(select 1 from payroll_shift_reviews pr
-     where pr.company_id=s.company_id and pr.shift_id=s.id and pr.decision='CANCELLED')`,[a.companyId,p.month]);
-  if(Number(crossMonthShifts.rows[0].count)>0)
-   throw new ScheduleError('CROSS_MONTH_SHIFT_ALLOCATION_REQUIRED',409);
-  // Fail closed when an employee has rate history but no version covering
-  // the start of a published shift. Never silently reprice it at today's rate.
-  const uncoveredRates=await db.query(`select count(distinct s.id)::int as count
-   from shifts s join companies co on co.id=s.company_id
-   where s.company_id=$1 and s.published=true
-    and to_char(s.starts_at at time zone co.timezone,'YYYY-MM')=$2
-    and not exists(select 1 from employee_compensation_history h where h.company_id=s.company_id and h.employee_id=s.employee_id
-      and h.effective_from<=(s.starts_at at time zone co.timezone)::date)`,[a.companyId,p.month]);
-  if(Number(uncoveredRates.rows[0].count)>0)
-   throw new ScheduleError('COMPENSATION_HISTORY_COVERAGE_REQUIRED',409);
-  // A monthly salary change within the requested month needs a defined
-  // proration policy; never display a deceptively precise gross-pay figure.
-  const monthlyTransitions=await db.query(`select count(*)::int as count
-   from employee_compensation_history h
-   join employee_compensation_profiles cp on cp.company_id=h.company_id and cp.employee_id=h.employee_id
-   where h.company_id=$1
-    and to_char(h.effective_from,'YYYY-MM')=$2
-    and h.effective_from>to_date($2||'-01','YYYY-MM-DD')
-    and (h.pay_type='MONTHLY' or exists (
-      select 1 from employee_compensation_history prior
-      where prior.company_id=h.company_id and prior.employee_id=h.employee_id
-       and prior.effective_from<h.effective_from and prior.pay_type='MONTHLY'
-       and not exists(select 1 from employee_compensation_history middle
-        where middle.company_id=h.company_id and middle.employee_id=h.employee_id
-         and middle.effective_from>prior.effective_from and middle.effective_from<h.effective_from)))`,[a.companyId,p.month]);
-  if(Number(monthlyTransitions.rows[0].count)>0)
-   throw new ScheduleError('MONTHLY_SALARY_PRORATION_REQUIRES_REVIEW',409);
-  // Do not silently omit paid hours when a shift spans a rate change.
-  const crossingRateShifts=await db.query(`select count(distinct s.id)::int as count
-   from shifts s join companies co on co.id=s.company_id
-   join employee_compensation_history h on h.company_id=s.company_id and h.employee_id=s.employee_id
-   where s.company_id=$1 and s.published=true
-    and to_char(s.starts_at at time zone co.timezone,'YYYY-MM')=$2
-    and h.effective_from>(s.starts_at at time zone co.timezone)::date
-    and (h.effective_from::timestamp at time zone co.timezone)<s.ends_at`,[a.companyId,p.month]);
-  if(Number(crossingRateShifts.rows[0].count)>0)
-   throw new ScheduleError('RATE_BOUNDARY_SHIFT_SPLIT_REQUIRED',409);
-  // Monthly base pay still comes from the current profile in this provisional
-  // calculation. Reject any month whose effective historical monthly salary
-  // differs until salary versioning/proration is implemented end-to-end.
-  const monthlyRateMismatch=await db.query(`select count(*)::int as count
-   from employee_compensation_profiles cp join companies co on co.id=cp.company_id
-   left join lateral (select h.pay_type,h.monthly_salary from employee_compensation_history h
-    where h.company_id=cp.company_id and h.employee_id=cp.employee_id
-     and h.effective_from<=((to_date($2||'-01','YYYY-MM-DD')+interval '1 month - 1 day')::date)
-    order by h.effective_from desc limit 1) h on true
-   where cp.company_id=$1 and (cp.pay_type='MONTHLY' or h.pay_type='MONTHLY')
-    and (h.pay_type is distinct from 'MONTHLY' or cp.pay_type is distinct from 'MONTHLY'
-     or h.monthly_salary is distinct from cp.monthly_salary)`,[a.companyId,p.month]);
-  if(Number(monthlyRateMismatch.rows[0].count)>0)
-   throw new ScheduleError('MONTHLY_SALARY_HISTORY_RECONCILIATION_REQUIRED',409);
-  // A shift awaiting reassignment cannot be treated as final payable work.
-  const unresolvedReassignments=await db.query(`select count(*)::int as count
-   from payroll_shift_reviews pr join shifts s on s.id=pr.shift_id and s.company_id=pr.company_id
-   join companies co on co.id=s.company_id
-   where pr.company_id=$1 and s.published=true
-    and pr.decision='REASSIGNMENT_REQUIRED'
-    and to_char(s.starts_at at time zone co.timezone,'YYYY-MM')=$2`,[a.companyId,p.month]);
-  if(Number(unresolvedReassignments.rows[0].count)>0)
-   throw new ScheduleError('PAYROLL_REASSIGNMENT_REVIEW_REQUIRED',409);
-  const result=await db.query(`with eligible_shifts as (
-   select s.id,s.employee_id,s.break_minutes,s.starts_at,s.ends_at,
-    greatest(0,extract(epoch from(s.ends_at-s.starts_at))/3600)::numeric as duration_hours,
-    rate.pay_type,rate.hourly_rate,rate.monthly_salary,rate.currency
-   from shifts s join companies co on co.id=s.company_id
-   join employee_compensation_profiles cp on cp.company_id=s.company_id and cp.employee_id=s.employee_id
-   join lateral (select h.pay_type,h.hourly_rate,h.monthly_salary,h.currency from employee_compensation_history h
-    where h.company_id=s.company_id and h.employee_id=s.employee_id and h.effective_from<=(s.starts_at at time zone co.timezone)::date
-    order by h.effective_from desc limit 1) rate on true
-   where s.company_id=$1 and s.published=true
-    and to_char(s.starts_at at time zone co.timezone,'YYYY-MM')=$2
-    and to_char((s.ends_at-interval '1 microsecond') at time zone co.timezone,'YYYY-MM')=$2
-    and not exists(select 1 from payroll_shift_reviews pr where pr.company_id=s.company_id and pr.shift_id=s.id and pr.decision='CANCELLED')
-    and not exists(select 1 from employee_compensation_history h where h.company_id=s.company_id and h.employee_id=s.employee_id
-      and h.effective_from>(s.starts_at at time zone co.timezone)::date
-      and (h.effective_from::timestamp at time zone co.timezone)<s.ends_at)
-  ), approved as (
-   select oa.shift_id,sum(oa.overtime_hours) as hours,sum(oa.overtime_hours*oa.approved_hourly_rate) as pay
-   from shift_overtime_approvals oa join eligible_shifts s on s.id=oa.shift_id
-   join companies co on co.id=oa.company_id
-   where oa.company_id=$1 and oa.currency=s.currency
-    and date_trunc('week',s.starts_at at time zone co.timezone)::date=oa.week_start
-    and date_trunc('week',(s.ends_at-interval '1 microsecond') at time zone co.timezone)::date=oa.week_start
-   group by oa.shift_id
-  ), totals as (
-   select s.employee_id,
-    sum(case when s.pay_type='HOURLY' then greatest(0,s.duration_hours-s.break_minutes::numeric/60-coalesce(ap.hours,0)) else 0 end) as regular_hours,
-    sum(case when s.pay_type='HOURLY' then greatest(0,s.duration_hours-s.break_minutes::numeric/60-coalesce(ap.hours,0))*s.hourly_rate else 0 end) as hourly_pay,
-    sum(coalesce(ap.hours,0)) as overtime_hours,sum(coalesce(ap.pay,0)) as overtime_pay,
-    count(*)::int as shift_count
-   from eligible_shifts s left join approved ap on ap.shift_id=s.id group by s.employee_id
-  ) select e.id as "employeeId",concat(e.first_name,' ',e.last_name) as "employeeName",cp.pay_type as "payType",cp.currency,
-   round(coalesce(t.regular_hours,0),2)::float as "regularHours",
-   round(case when cp.pay_type='MONTHLY' then cp.monthly_salary else coalesce(t.hourly_pay,0) end,2)::float as "regularPay",
-   round(coalesce(t.overtime_hours,0),2)::float as "overtimeHours",round(coalesce(t.overtime_pay,0),2)::float as "overtimePay",
-   round((case when cp.pay_type='MONTHLY' then cp.monthly_salary else coalesce(t.hourly_pay,0) end)+coalesce(t.overtime_pay,0),2)::float as "grossPay",
-   coalesce(t.shift_count,0)::int as "eligibleShifts"
-   from employee_compensation_profiles cp join employees e on e.id=cp.employee_id and e.company_id=cp.company_id
-   left join totals t on t.employee_id=cp.employee_id where cp.company_id=$1
-   order by "employeeName"`,[a.companyId,p.month]);
-  const excluded=await db.query(`select count(*)::int as count from shifts s join companies co on co.id=s.company_id
-   where s.company_id=$1 and (to_char(s.starts_at at time zone co.timezone,'YYYY-MM')=$2 or to_char((s.ends_at-interval '1 microsecond') at time zone co.timezone,'YYYY-MM')=$2)
-   and (s.published=false or to_char(s.starts_at at time zone co.timezone,'YYYY-MM')<>$2 or to_char((s.ends_at-interval '1 microsecond') at time zone co.timezone,'YYYY-MM')<>$2)`,[a.companyId,p.month]);
-  const rateBoundaries=await db.query(`select count(distinct s.id)::int as count from shifts s join companies co on co.id=s.company_id
-   join employee_compensation_history h on h.company_id=s.company_id and h.employee_id=s.employee_id
-   where s.company_id=$1 and s.published=true and to_char(s.starts_at at time zone co.timezone,'YYYY-MM')=$2
-    and h.effective_from>(s.starts_at at time zone co.timezone)::date
-    and h.effective_from<=(s.ends_at at time zone co.timezone)::date`,[a.companyId,p.month]);
-  const reviews=await db.query(`select count(*) filter(where pr.decision='CANCELLED')::int as cancelled,
-   count(*) filter(where pr.decision='REASSIGNMENT_REQUIRED')::int as pending
-   from payroll_shift_reviews pr join shifts s on s.id=pr.shift_id and s.company_id=pr.company_id
-   join companies co on co.id=s.company_id
-   where pr.company_id=$1 and to_char(s.starts_at at time zone co.timezone,'YYYY-MM')=$2
-   and to_char((s.ends_at-interval '1 microsecond') at time zone co.timezone,'YYYY-MM')=$2`,[a.companyId,p.month]);
-  return{ok:true,month:p.month,employees:result.rows,excludedShifts:Number(excluded.rows[0].count),rateBoundaryShifts:Number(rateBoundaries.rows[0].count),cancelledShifts:Number(reviews.rows[0].cancelled),pendingReassignments:Number(reviews.rows[0].pending),notice:'Read-only provisional gross pay, not a payslip. Hourly pay uses published scheduled hours less unpaid breaks and eligible approved overtime hours; monthly salaries are fixed. Only shifts wholly within the company-local month count. Cross-month and unpublished shifts are excluded. Manager-cancelled shifts are excluded from scheduled hourly pay and approved overtime; monthly base salaries remain fixed. Missing attendance alone does not reduce scheduled pay. Reassignment requests, unapproved overtime, taxes, deductions and rate versions are applied by shift start date; shifts crossing a rate-change date are excluded and counted in rateBoundaryShifts. Verified historical coverage is mandatory for published shifts. Historical backfill and validation are still required. Manager review is required before finalisation.'};
- });
+ route('GET','/v1/admin/scheduling/payroll-preview',async(req,a)=>{const p=z.object({month:z.string().regex(/^[0-9]{4}-(0[1-9]|1[0-2])$/)}).parse(req.query);return calculateScheduledPayroll(db,a,p)});
  route('GET','/v1/admin/scheduling/payroll-overtime-preview',async(req,a)=>{
  const p=z.object({month:z.string().regex(/^[0-9]{4}-(0[1-9]|1[0-2])$/)}).parse(req.query);
  const r=await db.query(`select oa.employee_id as "employeeId",
@@ -791,4 +660,136 @@ export function registerSchedulingRoutes(app:FastifyInstance,db:Pick<Pool,'query
   const parsed=rangeSchema.safeParse(req.query);if(!parsed.success)return reply.code(400).send({ok:false,error:'INVALID_DATE_RANGE'});const p=parsed.data;
   const [shifts,unavailable,notices]=await Promise.all([db.query(`select s.id,b.name as "branchName",s.starts_at as "startsAt",s.ends_at as "endsAt",s.break_minutes as "breakMinutes",(select min(occurred_at) from attendance_events where shift_id=s.id and employee_id=$2 and action='CHECK_IN') as "checkInAt",(select max(occurred_at) from attendance_events where shift_id=s.id and employee_id=$2 and action='CHECK_OUT') as "checkOutAt" from shifts s join branches b on b.id=s.branch_id join companies co on co.id=s.company_id where s.company_id=$1 and s.employee_id=$2 and s.published=true and s.starts_at<($4::date+1)::timestamp at time zone co.timezone and s.ends_at>$3::date::timestamp at time zone co.timezone order by s.starts_at`,[a.companyId,a.employeeId,p.from,p.to]),db.query(`select u.starts_at as "startsAt",u.ends_at as "endsAt" from employee_unavailability u join companies co on co.id=u.company_id where u.company_id=$1 and u.employee_id=$2 and u.active=true and u.starts_at<($4::date+1)::timestamp at time zone co.timezone and (u.ends_at is null or u.ends_at>$3::date::timestamp at time zone co.timezone) order by u.starts_at`,[a.companyId,a.employeeId,p.from,p.to]),db.query(`select id,message,created_at as "createdAt" from schedule_notices where company_id=$1 and employee_id=$2 order by created_at desc limit 10`,[a.companyId,a.employeeId])]);return{ok:true,shifts:shifts.rows,unavailability:unavailable.rows,notices:notices.rows};
  });
+}
+
+export async function calculateScheduledPayroll(db: Pick<Pool,'query'>,a:{companyId:string},p:{month:string}) {
+  // Until local-month splitting is implemented, a shift crossing the
+  // company-local month boundary must block payroll, not disappear from pay.
+  const crossMonthShifts=await db.query(`select count(*)::int as count from shifts s
+   join companies co on co.id=s.company_id
+   where s.company_id=$1 and s.published=true
+    and s.ends_at>s.starts_at
+    and (to_char(s.starts_at at time zone co.timezone,'YYYY-MM')=$2
+      or to_char((s.ends_at-interval '1 microsecond') at time zone co.timezone,'YYYY-MM')=$2)
+    and to_char(s.starts_at at time zone co.timezone,'YYYY-MM')
+      <>to_char((s.ends_at-interval '1 microsecond') at time zone co.timezone,'YYYY-MM')
+    and not exists(select 1 from payroll_shift_reviews pr
+     where pr.company_id=s.company_id and pr.shift_id=s.id and pr.decision='CANCELLED')`,[a.companyId,p.month]);
+  if(Number(crossMonthShifts.rows[0].count)>0)
+   throw new ScheduleError('CROSS_MONTH_SHIFT_ALLOCATION_REQUIRED',409);
+  // Fail closed when an employee has rate history but no version covering
+  // the start of a published shift. Never silently reprice it at today's rate.
+  const uncoveredRates=await db.query(`select count(distinct s.id)::int as count
+   from shifts s join companies co on co.id=s.company_id
+   where s.company_id=$1 and s.published=true
+    and to_char(s.starts_at at time zone co.timezone,'YYYY-MM')=$2
+    and not exists(select 1 from employee_compensation_history h where h.company_id=s.company_id and h.employee_id=s.employee_id
+      and h.effective_from<=(s.starts_at at time zone co.timezone)::date)`,[a.companyId,p.month]);
+  if(Number(uncoveredRates.rows[0].count)>0)
+   throw new ScheduleError('COMPENSATION_HISTORY_COVERAGE_REQUIRED',409);
+  // A monthly salary change within the requested month needs a defined
+  // proration policy; never display a deceptively precise gross-pay figure.
+  const monthlyTransitions=await db.query(`select count(*)::int as count
+   from employee_compensation_history h
+   join employee_compensation_profiles cp on cp.company_id=h.company_id and cp.employee_id=h.employee_id
+   where h.company_id=$1
+    and to_char(h.effective_from,'YYYY-MM')=$2
+    and h.effective_from>to_date($2||'-01','YYYY-MM-DD')
+    and (h.pay_type='MONTHLY' or exists (
+      select 1 from employee_compensation_history prior
+      where prior.company_id=h.company_id and prior.employee_id=h.employee_id
+       and prior.effective_from<h.effective_from and prior.pay_type='MONTHLY'
+       and not exists(select 1 from employee_compensation_history middle
+        where middle.company_id=h.company_id and middle.employee_id=h.employee_id
+         and middle.effective_from>prior.effective_from and middle.effective_from<h.effective_from)))`,[a.companyId,p.month]);
+  if(Number(monthlyTransitions.rows[0].count)>0)
+   throw new ScheduleError('MONTHLY_SALARY_PRORATION_REQUIRES_REVIEW',409);
+  // Do not silently omit paid hours when a shift spans a rate change.
+  const crossingRateShifts=await db.query(`select count(distinct s.id)::int as count
+   from shifts s join companies co on co.id=s.company_id
+   join employee_compensation_history h on h.company_id=s.company_id and h.employee_id=s.employee_id
+   where s.company_id=$1 and s.published=true
+    and to_char(s.starts_at at time zone co.timezone,'YYYY-MM')=$2
+    and h.effective_from>(s.starts_at at time zone co.timezone)::date
+    and (h.effective_from::timestamp at time zone co.timezone)<s.ends_at`,[a.companyId,p.month]);
+  if(Number(crossingRateShifts.rows[0].count)>0)
+   throw new ScheduleError('RATE_BOUNDARY_SHIFT_SPLIT_REQUIRED',409);
+  // Monthly base pay still comes from the current profile in this provisional
+  // calculation. Reject any month whose effective historical monthly salary
+  // differs until salary versioning/proration is implemented end-to-end.
+  const monthlyRateMismatch=await db.query(`select count(*)::int as count
+   from employee_compensation_profiles cp join companies co on co.id=cp.company_id
+   left join lateral (select h.pay_type,h.monthly_salary from employee_compensation_history h
+    where h.company_id=cp.company_id and h.employee_id=cp.employee_id
+     and h.effective_from<=((to_date($2||'-01','YYYY-MM-DD')+interval '1 month - 1 day')::date)
+    order by h.effective_from desc limit 1) h on true
+   where cp.company_id=$1 and (cp.pay_type='MONTHLY' or h.pay_type='MONTHLY')
+    and (h.pay_type is distinct from 'MONTHLY' or cp.pay_type is distinct from 'MONTHLY'
+     or h.monthly_salary is distinct from cp.monthly_salary)`,[a.companyId,p.month]);
+  if(Number(monthlyRateMismatch.rows[0].count)>0)
+   throw new ScheduleError('MONTHLY_SALARY_HISTORY_RECONCILIATION_REQUIRED',409);
+  // A shift awaiting reassignment cannot be treated as final payable work.
+  const unresolvedReassignments=await db.query(`select count(*)::int as count
+   from payroll_shift_reviews pr join shifts s on s.id=pr.shift_id and s.company_id=pr.company_id
+   join companies co on co.id=s.company_id
+   where pr.company_id=$1 and s.published=true
+    and pr.decision='REASSIGNMENT_REQUIRED'
+    and to_char(s.starts_at at time zone co.timezone,'YYYY-MM')=$2`,[a.companyId,p.month]);
+  if(Number(unresolvedReassignments.rows[0].count)>0)
+   throw new ScheduleError('PAYROLL_REASSIGNMENT_REVIEW_REQUIRED',409);
+  const result=await db.query(`with eligible_shifts as (
+   select s.id,s.employee_id,s.break_minutes,s.starts_at,s.ends_at,
+    greatest(0,extract(epoch from(s.ends_at-s.starts_at))/3600)::numeric as duration_hours,
+    rate.pay_type,rate.hourly_rate,rate.monthly_salary,rate.currency
+   from shifts s join companies co on co.id=s.company_id
+   join employee_compensation_profiles cp on cp.company_id=s.company_id and cp.employee_id=s.employee_id
+   join lateral (select h.pay_type,h.hourly_rate,h.monthly_salary,h.currency from employee_compensation_history h
+    where h.company_id=s.company_id and h.employee_id=s.employee_id and h.effective_from<=(s.starts_at at time zone co.timezone)::date
+    order by h.effective_from desc limit 1) rate on true
+   where s.company_id=$1 and s.published=true
+    and to_char(s.starts_at at time zone co.timezone,'YYYY-MM')=$2
+    and to_char((s.ends_at-interval '1 microsecond') at time zone co.timezone,'YYYY-MM')=$2
+    and not exists(select 1 from payroll_shift_reviews pr where pr.company_id=s.company_id and pr.shift_id=s.id and pr.decision='CANCELLED')
+    and not exists(select 1 from employee_compensation_history h where h.company_id=s.company_id and h.employee_id=s.employee_id
+      and h.effective_from>(s.starts_at at time zone co.timezone)::date
+      and (h.effective_from::timestamp at time zone co.timezone)<s.ends_at)
+  ), approved as (
+   select oa.shift_id,sum(oa.overtime_hours) as hours,sum(oa.overtime_hours*oa.approved_hourly_rate) as pay
+   from shift_overtime_approvals oa join eligible_shifts s on s.id=oa.shift_id
+   join companies co on co.id=oa.company_id
+   where oa.company_id=$1 and oa.currency=s.currency
+    and date_trunc('week',s.starts_at at time zone co.timezone)::date=oa.week_start
+    and date_trunc('week',(s.ends_at-interval '1 microsecond') at time zone co.timezone)::date=oa.week_start
+   group by oa.shift_id
+  ), totals as (
+   select s.employee_id,
+    sum(case when s.pay_type='HOURLY' then greatest(0,s.duration_hours-coalesce(ap.hours,0)) else 0 end) as regular_hours,
+    sum(case when s.pay_type='HOURLY' then greatest(0,s.duration_hours-coalesce(ap.hours,0))*s.hourly_rate else 0 end) as hourly_pay,
+    sum(coalesce(ap.hours,0)) as overtime_hours,sum(coalesce(ap.pay,0)) as overtime_pay,
+    count(*)::int as shift_count
+   from eligible_shifts s left join approved ap on ap.shift_id=s.id group by s.employee_id
+  ) select e.id as "employeeId",concat(e.first_name,' ',e.last_name) as "employeeName",cp.pay_type as "payType",cp.currency,
+   round(coalesce(t.regular_hours,0),2)::float as "regularHours",
+   round(case when cp.pay_type='MONTHLY' then cp.monthly_salary else coalesce(t.hourly_pay,0) end,2)::float as "regularPay",
+   round(coalesce(t.overtime_hours,0),2)::float as "overtimeHours",round(coalesce(t.overtime_pay,0),2)::float as "overtimePay",
+   round((case when cp.pay_type='MONTHLY' then cp.monthly_salary else coalesce(t.hourly_pay,0) end)+coalesce(t.overtime_pay,0),2)::float as "grossPay",
+   coalesce(t.shift_count,0)::int as "eligibleShifts"
+   from employee_compensation_profiles cp join employees e on e.id=cp.employee_id and e.company_id=cp.company_id
+   left join totals t on t.employee_id=cp.employee_id where cp.company_id=$1
+   order by "employeeName"`,[a.companyId,p.month]);
+  const excluded=await db.query(`select count(*)::int as count from shifts s join companies co on co.id=s.company_id
+   where s.company_id=$1 and (to_char(s.starts_at at time zone co.timezone,'YYYY-MM')=$2 or to_char((s.ends_at-interval '1 microsecond') at time zone co.timezone,'YYYY-MM')=$2)
+   and (s.published=false or to_char(s.starts_at at time zone co.timezone,'YYYY-MM')<>$2 or to_char((s.ends_at-interval '1 microsecond') at time zone co.timezone,'YYYY-MM')<>$2)`,[a.companyId,p.month]);
+  const rateBoundaries=await db.query(`select count(distinct s.id)::int as count from shifts s join companies co on co.id=s.company_id
+   join employee_compensation_history h on h.company_id=s.company_id and h.employee_id=s.employee_id
+   where s.company_id=$1 and s.published=true and to_char(s.starts_at at time zone co.timezone,'YYYY-MM')=$2
+    and h.effective_from>(s.starts_at at time zone co.timezone)::date
+    and h.effective_from<=(s.ends_at at time zone co.timezone)::date`,[a.companyId,p.month]);
+  const reviews=await db.query(`select count(*) filter(where pr.decision='CANCELLED')::int as cancelled,
+   count(*) filter(where pr.decision='REASSIGNMENT_REQUIRED')::int as pending
+   from payroll_shift_reviews pr join shifts s on s.id=pr.shift_id and s.company_id=pr.company_id
+   join companies co on co.id=s.company_id
+   where pr.company_id=$1 and to_char(s.starts_at at time zone co.timezone,'YYYY-MM')=$2
+   and to_char((s.ends_at-interval '1 microsecond') at time zone co.timezone,'YYYY-MM')=$2`,[a.companyId,p.month]);
+  return{ok:true,month:p.month,employees:result.rows,excludedShifts:Number(excluded.rows[0].count),rateBoundaryShifts:Number(rateBoundaries.rows[0].count),cancelledShifts:Number(reviews.rows[0].cancelled),pendingReassignments:Number(reviews.rows[0].pending),notice:'Scheduled earnings preview before approved bonuses and deductions; use Payroll approval and payslips for final totals. No break deductions.  Hourly pay uses published scheduled hours less eligible approved overtime hours; monthly salaries are fixed. Only shifts wholly within the company-local month count. Cross-month and unpublished shifts are excluded. Manager-cancelled shifts are excluded from scheduled hourly pay and approved overtime; monthly base salaries remain fixed. Missing attendance alone does not reduce scheduled pay. Reassignment requests, unapproved overtime, taxes, deductions and rate versions are applied by shift start date; shifts crossing a rate-change date are excluded and counted in rateBoundaryShifts. Verified historical coverage is mandatory for published shifts. Historical backfill and validation are still required. Manager review is required before finalisation.'};
 }

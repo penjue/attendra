@@ -1,3 +1,4 @@
+import { registerPayrollRoutes } from './payroll.js';
 import { registerSchedulingRoutes } from './scheduling.js';
 import { registerRotaTemplateRoutes } from './rota-templates.js';
 import { registerRotaOccurrenceRoutes } from './rota-occurrences.js';
@@ -15,6 +16,7 @@ import { loginCompanyAdmin, requireAdmin } from './admin-auth.js';
 const app = Fastify({ logger: true });
 registerEmployeeRoutes(app, db);
 registerSchedulingRoutes(app, db);
+registerPayrollRoutes(app, db);
 registerRotaTemplateRoutes(app, db);
 registerRotaOccurrenceRoutes(app, db);
 registerEmployeeQrRoutes(app, db);
@@ -166,4 +168,5 @@ app.get('/v1/admin/timekeeping',async(request,reply)=>{const a=requireAdmin(requ
 
 registerTimesheetRoutes(app,requireAdmin);
 
+if(process.env.ATTENDRA_PAYROLL_STAGING_VERIFY==='true'){const {verifyStagingPayroll}=await import('./payroll-verify.js');await verifyStagingPayroll(db)}
 const port=Number(process.env.PORT??4000);await app.listen({port,host:'0.0.0.0'});

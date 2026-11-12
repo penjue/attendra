@@ -665,3 +665,29 @@ DO $$ BEGIN
   ALTER TABLE payroll_draft_adjustments ADD CONSTRAINT payroll_draft_adjustments_review_status_check CHECK (review_status IN ('PENDING','APPROVED','REJECTED'));
  END IF;
 END $$;
+
+
+-- Final payroll stores identity, source reconciliation and adjustments at approval time.
+ALTER TABLE employee_payroll_snapshots ADD COLUMN IF NOT EXISTS bonus_pay numeric(14,2) NOT NULL DEFAULT 0 CHECK (bonus_pay>=0);
+ALTER TABLE employee_payroll_snapshots ADD COLUMN IF NOT EXISTS deductions numeric(14,2) NOT NULL DEFAULT 0 CHECK (deductions>=0);
+ALTER TABLE employee_payroll_snapshots ADD COLUMN IF NOT EXISTS payslip_data jsonb;
+CREATE TABLE IF NOT EXISTS payroll_runs (
+ id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+ company_id uuid NOT NULL REFERENCES companies(id),
+ payroll_month date NOT NULL CHECK (extract(day from payroll_month)=1),
+ preview_hash text NOT NULL,
+ approved_by uuid NOT NULL REFERENCES company_admins(id),
+ approved_at timestamptz NOT NULL DEFAULT now(),
+ UNIQUE(company_id,payroll_month)
+);
+CREATE OR REPLACE FUNCTION protect_payroll_run() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN RAISE EXCEPTION 'FINALISED_PAYROLL_IMMUTABLE'; END;
+$$;
+DROP TRIGGER IF EXISTS trg_protect_payroll_run ON payroll_runs;
+CREATE TRIGGER trg_protect_payroll_run BEFORE UPDATE OR DELETE ON payroll_runs
+FOR EACH ROW EXECUTE FUNCTION protect_payroll_run();
+
+ALTER TABLE employee_payroll_snapshots ADD COLUMN IF NOT EXISTS total_earnings numeric(14,2)
+ GENERATED ALWAYS AS (regular_pay+overtime_pay+bonus_pay) STORED;
+ALTER TABLE employee_payroll_snapshots ADD COLUMN IF NOT EXISTS net_pay numeric(14,2)
+ GENERATED ALWAYS AS (regular_pay+overtime_pay+bonus_pay-deductions) STORED;
